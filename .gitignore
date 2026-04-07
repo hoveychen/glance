@@ -1,0 +1,19 @@
+# Xcode
+HackerScreen.xcodeproj/
+build/
+DerivedData/
+*.xcuserstate
+*.xcworkspace
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# Test binaries
+test_*
+!test_*.swift
+
+# Build artifacts
+*.app
+*.dmg
+*.zip
