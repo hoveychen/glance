@@ -29,8 +29,10 @@ struct MissionControlLayoutEngine {
     // MARK: - Parameters
 
     let edgePadding: CGFloat = 8
-    let itemSpacing: CGFloat = 8
+    let itemSpacing: CGFloat = 16
     let minimumThumbnailHeight: CGFloat = 80
+    /// Space reserved above each thumbnail for the title header.
+    let headerHeight: CGFloat = 22
 
     // MARK: - Public
 
@@ -237,24 +239,29 @@ struct MissionControlLayoutEngine {
 
     /// Lay out windows in a grid: binary search for the max thumbnail height
     /// that fits all windows using greedy line-wrapping (like text reflow).
+    /// Each slot includes `headerHeight` at the top for the title label;
+    /// aspect-ratio math uses only the image portion (slot height − header).
     private func gridLayout(in rect: CGRect, windows: [WindowMetrics], screenIndex: Int) -> [WindowSlot] {
         guard !windows.isEmpty else { return [] }
 
         let availW = rect.width
         let availH = rect.height
         let ratios = windows.map { max($0.aspectRatio, 0.3) }
+        let hH = headerHeight
 
-        // Cap the search to the tallest original window — never upscale beyond native size
-        let maxOrigH = windows.map(\.originalHeight).max() ?? availH
+        // Cap the search to the tallest original window (+ header) — never upscale beyond native size
+        let maxOrigH = (windows.map(\.originalHeight).max() ?? availH) + hH
 
-        // Binary search for the maximum thumbnail height that fits
+        // Binary search for the maximum slot height (image + header) that fits
         var lo: CGFloat = minimumThumbnailHeight
         var hi: CGFloat = min(availH, maxOrigH)
         var bestH: CGFloat = lo
 
-        for _ in 0..<30 {  // ~30 iterations gives sub-pixel precision
+        for _ in 0..<30 {
             let mid = (lo + hi) / 2
-            let rows = packRows(ratios: ratios, thumbH: mid, availW: availW)
+            let imgH = mid - hH
+            guard imgH > 0 else { hi = mid; continue }
+            let rows = packRows(ratios: ratios, imageH: imgH, availW: availW)
             let totalH = CGFloat(rows.count) * mid + CGFloat(max(0, rows.count - 1)) * itemSpacing
             if totalH <= availH {
                 bestH = mid
@@ -265,8 +272,11 @@ struct MissionControlLayoutEngine {
             if hi - lo < 0.5 { break }
         }
 
+        let imageH = bestH - hH
+        guard imageH > 0 else { return [] }
+
         // Generate final layout at bestH
-        let rows = packRows(ratios: ratios, thumbH: bestH, availW: availW)
+        let rows = packRows(ratios: ratios, imageH: imageH, availW: availW)
         let totalH = CGFloat(rows.count) * bestH + CGFloat(max(0, rows.count - 1)) * itemSpacing
 
         // Center the entire grid vertically
@@ -277,31 +287,34 @@ struct MissionControlLayoutEngine {
             // AppKit: row 0 at top (highest y)
             let rowY = startY + totalH - CGFloat(rowIdx + 1) * bestH - CGFloat(rowIdx) * itemSpacing
 
-            var widths = rowIndices.map { ratios[$0] * bestH }
+            // Width is based on image height, not total slot height
+            var widths = rowIndices.map { ratios[$0] * imageH }
             let totalW = widths.reduce(0, +) + CGFloat(max(0, widths.count - 1)) * itemSpacing
 
-            // If row overflows zone width, scale entire row down to fit
-            var rowH = bestH
+            var rowImgH = imageH
+            var rowSlotH = bestH
             if totalW > availW {
                 let scale = (availW - CGFloat(max(0, widths.count - 1)) * itemSpacing) / widths.reduce(0, +)
                 widths = widths.map { $0 * scale }
-                rowH = bestH * scale
+                rowImgH = imageH * scale
+                rowSlotH = rowImgH + hH
             }
 
             let actualTotalW = widths.reduce(0, +) + CGFloat(max(0, widths.count - 1)) * itemSpacing
             var x = rect.minX + (availW - actualTotalW) / 2
-            let y = rowY + (bestH - rowH) / 2  // center vertically in row slot
+            let y = rowY + (bestH - rowSlotH) / 2
 
             for (i, winIdx) in rowIndices.enumerated() {
-                // Cap each window to its original size — never upscale
+                // Cap each window to its original image size — never upscale
                 let origH = windows[winIdx].originalHeight
-                let cappedH = min(rowH, origH)
+                let cappedImgH = min(rowImgH, origH)
                 let cappedW = min(widths[i], ratios[winIdx] * origH)
+                let slotH = cappedImgH + hH
                 let slotRect = CGRect(
                     x: x + (widths[i] - cappedW) / 2,
-                    y: y + (rowH - cappedH) / 2,
+                    y: y + (rowSlotH - slotH) / 2,
                     width: cappedW,
-                    height: cappedH
+                    height: slotH
                 )
                 slots.append(WindowSlot(
                     windowID: windows[winIdx].windowID,
@@ -315,13 +328,13 @@ struct MissionControlLayoutEngine {
         return slots
     }
 
-    /// Greedy line-wrap: pack window indices into rows at a given thumbnail height.
-    private func packRows(ratios: [CGFloat], thumbH: CGFloat, availW: CGFloat) -> [[Int]] {
+    /// Greedy line-wrap: pack window indices into rows at a given image height.
+    private func packRows(ratios: [CGFloat], imageH: CGFloat, availW: CGFloat) -> [[Int]] {
         var rows: [[Int]] = [[]]
         var currentRowWidth: CGFloat = 0
 
         for i in ratios.indices {
-            let w = ratios[i] * thumbH
+            let w = ratios[i] * imageH
             let widthWithSpacing = currentRowWidth > 0 ? currentRowWidth + itemSpacing + w : w
 
             if widthWithSpacing <= availW || rows.last!.isEmpty {

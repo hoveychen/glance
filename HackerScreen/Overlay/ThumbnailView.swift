@@ -35,10 +35,11 @@ final class ThumbnailView: NSView {
         setup()
     }
 
+    /// Must match the layout engine's headerHeight.
+    static let headerHeight: CGFloat = 22
+
     private func setup() {
         wantsLayer = true
-        layer?.cornerRadius = 8
-        layer?.masksToBounds = true
         layer?.backgroundColor = NSColor.clear.cgColor
         layer?.borderWidth = 0
 
@@ -47,7 +48,7 @@ final class ThumbnailView: NSView {
         imageLayer.masksToBounds = true
         layer?.addSublayer(imageLayer)
 
-        // Header: semi-transparent pill at top-center with icon + title
+        // Header: semi-transparent pill ABOVE the image
         headerContainer.backgroundColor = NSColor(white: 0, alpha: 0.55).cgColor
         headerContainer.cornerRadius = 10
         headerContainer.masksToBounds = true
@@ -96,34 +97,35 @@ final class ThumbnailView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
 
-        imageLayer.frame = bounds
+        let hH = Self.headerHeight
+        let imageRect = CGRect(x: 0, y: 0, width: bounds.width, height: bounds.height - hH)
+        imageLayer.frame = imageRect
 
-        // Header pill: icon (14x14) + label, at top-center
+        // Header pill above the image, horizontally centered
         let iconSize: CGFloat = 14
-        let headerPadH: CGFloat = 6
-        let headerPadV: CGFloat = 3
-        let headerHeight: CGFloat = iconSize + headerPadV * 2
-        let maxLabelW = bounds.width * 0.8 - iconSize - headerPadH * 3
-        let headerW = min(bounds.width - 8, iconSize + headerPadH * 3 + maxLabelW)
+        let padH: CGFloat = 6
+        let padV: CGFloat = (hH - iconSize) / 2
+        let headerW = min(bounds.width, bounds.width * 0.9)
         let headerX = (bounds.width - headerW) / 2
-        let headerY = bounds.height - headerHeight - 4  // AppKit: top of view
+        let headerY = bounds.height - hH  // AppKit: top of view
 
-        headerContainer.frame = CGRect(x: headerX, y: headerY, width: headerW, height: headerHeight)
-        iconLayer.frame = CGRect(x: headerPadH, y: headerPadV, width: iconSize, height: iconSize)
+        headerContainer.frame = CGRect(x: headerX, y: headerY, width: headerW, height: hH)
+        iconLayer.frame = CGRect(x: padH, y: padV, width: iconSize, height: iconSize)
         labelLayer.frame = CGRect(
-            x: headerPadH + iconSize + 4,
-            y: headerPadV,
-            width: headerW - headerPadH * 2 - iconSize - 4,
+            x: padH + iconSize + 4,
+            y: padV,
+            width: headerW - padH * 2 - iconSize - 4,
             height: iconSize
         )
 
-        activeOverlay.frame = bounds
-        activeLabel.frame = CGRect(x: 0, y: (bounds.height - 16) / 2, width: bounds.width, height: 16)
+        // Active overlay and hint cover the image area only
+        activeOverlay.frame = imageRect
+        activeLabel.frame = CGRect(x: 0, y: (imageRect.height - 16) / 2, width: imageRect.width, height: 16)
 
         let hintSize: CGFloat = 40
         hintLayer.frame = CGRect(
             x: (bounds.width - hintSize) / 2,
-            y: (bounds.height - hintSize) / 2,
+            y: (imageRect.height - hintSize) / 2,
             width: hintSize, height: hintSize
         )
 
@@ -156,8 +158,8 @@ final class ThumbnailView: NSView {
         if !isActiveWindow {
             CATransaction.begin()
             CATransaction.setAnimationDuration(0.15)
-            layer?.borderColor = NSColor.systemBlue.cgColor
-            layer?.borderWidth = 3
+            imageLayer.borderColor = NSColor.systemBlue.cgColor
+            imageLayer.borderWidth = 3
             CATransaction.commit()
         }
         onHoverStart?()
@@ -168,10 +170,10 @@ final class ThumbnailView: NSView {
         CATransaction.begin()
         CATransaction.setAnimationDuration(0.15)
         if isActiveWindow {
-            layer?.borderColor = NSColor.systemGreen.withAlphaComponent(0.6).cgColor
-            layer?.borderWidth = 2
+            imageLayer.borderColor = NSColor.systemGreen.withAlphaComponent(0.6).cgColor
+            imageLayer.borderWidth = 2
         } else {
-            layer?.borderWidth = 0
+            imageLayer.borderWidth = 0
         }
         CATransaction.commit()
         onHoverEnd?()
@@ -209,10 +211,10 @@ final class ThumbnailView: NSView {
         activeOverlay.isHidden = !isActiveWindow
         activeLabel.isHidden = !isActiveWindow
         if isActiveWindow {
-            layer?.borderColor = NSColor.systemGreen.withAlphaComponent(0.6).cgColor
-            layer?.borderWidth = 2
+            imageLayer.borderColor = NSColor.systemGreen.withAlphaComponent(0.6).cgColor
+            imageLayer.borderWidth = 2
         } else if !isMouseInside {
-            layer?.borderWidth = 0
+            imageLayer.borderWidth = 0
         }
         CATransaction.commit()
     }
