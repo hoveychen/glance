@@ -7,6 +7,7 @@ struct WindowMetrics {
     let aspectRatio: CGFloat      // width / height
     let originalScreenIndex: Int? // preferred screen
     let originalHeight: CGFloat   // original window height (for capping upscale)
+    let isManuallyAssigned: Bool  // user dragged to this screen — exempt from capacity cap
 }
 
 struct WindowSlot {
@@ -150,7 +151,13 @@ struct MissionControlLayoutEngine {
             }
         }
 
-        return zones.isEmpty ? [padded] : zones
+        if zones.isEmpty {
+            // No excluded rect (non-work-area screen) → use the full screen.
+            // Has excluded rect but no usable space around it → return empty
+            // so all windows overflow to other screens.
+            return excludedRect == nil ? [padded] : []
+        }
+        return zones
     }
 
     // MARK: - Window Distribution
@@ -165,26 +172,65 @@ struct MissionControlLayoutEngine {
             assignments[entry.screenIndex] = []
         }
 
-        var unassigned: [WindowMetrics] = []
-        for w in windows {
-            if let prefIdx = w.originalScreenIndex, assignments[prefIdx] != nil {
-                assignments[prefIdx]!.append(w)
-            } else {
-                unassigned.append(w)
-            }
-        }
-
         // Compute area per screen for load balancing
         let screenAreas: [Int: CGFloat] = Dictionary(uniqueKeysWithValues:
             screenZones.map { ($0.screenIndex, $0.zones.reduce(0) { $0 + $1.width * $1.height }) }
         )
+        let totalArea = screenAreas.values.reduce(0, +)
+        guard totalArea > 0 else { return assignments.map { ($0.key, $0.value) } }
 
-        // Distribute unassigned to least loaded screen
-        for w in unassigned {
-            let target = assignments.min { a, b in
+        // Phase 1: Place manually-assigned windows unconditionally (user dragged them here).
+        var autoWindows: [WindowMetrics] = []
+        for w in windows {
+            if w.isManuallyAssigned, let prefIdx = w.originalScreenIndex, assignments[prefIdx] != nil {
+                assignments[prefIdx]!.append(w)
+            } else {
+                autoWindows.append(w)
+            }
+        }
+
+        // Phase 2: Group remaining by preferred screen, then cap to fair share.
+        var preferred: [Int: [WindowMetrics]] = [:]
+        for key in assignments.keys { preferred[key] = [] }
+        var overflow: [WindowMetrics] = []
+
+        for w in autoWindows {
+            if let prefIdx = w.originalScreenIndex, preferred[prefIdx] != nil {
+                preferred[prefIdx]!.append(w)
+            } else {
+                overflow.append(w)
+            }
+        }
+
+        let totalWindows = windows.count
+        var capacities: [Int: Int] = [:]
+        for (screenIdx, windowList) in preferred {
+            let area = screenAreas[screenIdx] ?? 1
+            let baseCapacity = max(1, Int(ceil(CGFloat(totalWindows) * area / totalArea)))
+            // Subtract manually-assigned windows already placed on this screen
+            let manualCount = assignments[screenIdx]?.count ?? 0
+            let remaining = max(0, baseCapacity - manualCount)
+            capacities[screenIdx] = baseCapacity
+            if windowList.count > remaining {
+                assignments[screenIdx]! += Array(windowList.prefix(remaining))
+                overflow.append(contentsOf: windowList.dropFirst(remaining))
+            } else {
+                assignments[screenIdx]! += windowList
+            }
+        }
+
+        // Phase 3: Distribute overflow to screens that still have room.
+        // Tiebreaker by screen index for deterministic ordering.
+        for w in overflow {
+            let underCapacity = assignments.filter { $0.value.count < (capacities[$0.key] ?? Int.max) }
+            let pool = underCapacity.isEmpty ? assignments : underCapacity
+            let target = pool.min { a, b in
                 let aArea = screenAreas[a.key] ?? 1
                 let bArea = screenAreas[b.key] ?? 1
-                return CGFloat(a.value.count) / aArea < CGFloat(b.value.count) / bArea
+                let densityA = CGFloat(a.value.count) / aArea
+                let densityB = CGFloat(b.value.count) / bArea
+                if abs(densityA - densityB) > 1e-9 { return densityA < densityB }
+                return a.key < b.key
             }
             if let key = target?.key {
                 assignments[key]!.append(w)
@@ -205,7 +251,13 @@ struct MissionControlLayoutEngine {
 
         // Sort zones by area descending — fill the best zones first so overflow
         // (from rounding) lands in the largest zone rather than a thin strip.
-        let sortedZones = zones.sorted { $0.width * $0.height > $1.width * $1.height }
+        // Tiebreaker by position for deterministic ordering.
+        let sortedZones = zones.sorted {
+            let a0 = $0.width * $0.height, a1 = $1.width * $1.height
+            if abs(a0 - a1) > 1 { return a0 > a1 }
+            if abs($0.minY - $1.minY) > 1 { return $0.minY > $1.minY }
+            return $0.minX < $1.minX
+        }
         let totalArea = sortedZones.reduce(0) { $0 + $1.width * $1.height }
 
         // Compute proportional window counts per zone

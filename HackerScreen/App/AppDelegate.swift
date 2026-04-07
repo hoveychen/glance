@@ -49,6 +49,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Stack of previously active window IDs (most recent last).
     private var mainWindowStack: [CGWindowID] = []
 
+    /// Windows manually dragged to a specific screen — exempt from capacity capping.
+    private var manualScreenAssignment: Set<CGWindowID> = []
+
     /// The frosted-glass work area.
     private var workAreaWindow: WorkAreaWindow?
 
@@ -360,12 +363,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             windowOrder.append(info.windowID)
         }
 
-        // Build metrics in stable order
+        // Build metrics in stable order.
+        // Use the saved original frame (before parking) for aspect ratio and height,
+        // so layout inputs don't fluctuate from virtual-display frame jitter.
         let orderedInfos = windowOrder.compactMap { id in thumbnailInfos.first { $0.windowID == id } }
         let metrics = orderedInfos.map { info -> WindowMetrics in
             let frameForRatio: CGRect
-            if info.windowID == effectiveMainID,
-               let orig = AccessibilityManager.shared.getOriginalFrame(for: info.windowID) {
+            if let orig = AccessibilityManager.shared.getOriginalFrame(for: info.windowID) {
                 frameForRatio = orig
             } else {
                 frameForRatio = info.frame
@@ -377,11 +381,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 windowID: info.windowID,
                 aspectRatio: ratio,
                 originalScreenIndex: info.originalScreenIndex,
-                originalHeight: frameForRatio.height
+                originalHeight: frameForRatio.height,
+                isManuallyAssigned: manualScreenAssignment.contains(info.windowID)
             )
         }
 
         let slots = layoutEngine.layout(screens: screenRegions, windows: metrics)
+
+        // Stabilize distribution: update each window's screen preference to where it
+        // was actually placed, so next cycle it stays on the same screen.
+        for slot in slots {
+            if let info = thumbnailInfos.first(where: { $0.windowID == slot.windowID }) {
+                info.originalScreenIndex = slot.screenIndex
+            }
+        }
 
         // Park non-main windows to virtual display (skip main window — it's in the work area)
         for (i, info) in thumbnailInfos.enumerated() {
@@ -426,6 +439,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Constrain only if we didn't just move it — give AX API time to settle
             if !justMovedMainWindow {
                 constrainMainWindowToWorkArea(windowID: mainID, pid: info.ownerPID, workAreaCG: usableArea)
+            }
+        }
+
+        // Constrain same-PID popup/dialog windows into the work area.
+        // Only touch windows that are on a real screen (not the virtual display)
+        // and are not managed as thumbnails.
+        if let mainPID {
+            let vdOriginX = VirtualDisplayManager.shared.origin.x
+            let thumbnailIDs = Set(thumbnailInfos.map(\.windowID))
+            for info in windows where info.ownerPID == mainPID
+                && info.windowID != effectiveMainID
+                && !parkedWindows.contains(info.windowID)
+                && !thumbnailIDs.contains(info.windowID)
+                && info.frame.origin.x < vdOriginX - 100 {
+                AccessibilityManager.shared.constrainWindow(
+                    pid: info.ownerPID, cgFrame: info.frame, within: usableArea
+                )
             }
         }
 
@@ -670,6 +700,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            let info = windows.first(where: { $0.windowID == windowID }),
            info.originalScreenIndex != targetScreen {
             info.originalScreenIndex = targetScreen
+            manualScreenAssignment.insert(windowID)
         }
 
         // Clear dragging state
@@ -817,19 +848,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Push the main window back inside the work area if it has been dragged/resized outside.
+    /// If the window exceeds the work area (e.g. double-click title bar zoom), fill the work area.
     private func constrainMainWindowToWorkArea(windowID: CGWindowID, pid: pid_t, workAreaCG: CGRect) {
         guard let currentFrame = AccessibilityManager.shared.getCurrentCGFrame(for: windowID) else { return }
 
-        let clamped = clampToWorkArea(currentFrame, workArea: workAreaCG)
+        let target: CGRect
+        if currentFrame.width > workAreaCG.width + 1 || currentFrame.height > workAreaCG.height + 1 {
+            // Window exceeds work area (zoom/maximize) → fill work area entirely
+            target = workAreaCG
+        } else {
+            // Just push position back inside, keep size unchanged
+            var x = currentFrame.origin.x
+            var y = currentFrame.origin.y
+            if x < workAreaCG.origin.x { x = workAreaCG.origin.x }
+            if y < workAreaCG.origin.y { y = workAreaCG.origin.y }
+            if x + currentFrame.width > workAreaCG.maxX { x = workAreaCG.maxX - currentFrame.width }
+            if y + currentFrame.height > workAreaCG.maxY { y = workAreaCG.maxY - currentFrame.height }
+            target = CGRect(x: x, y: y, width: currentFrame.width, height: currentFrame.height)
+        }
 
-        // Only adjust if actually out of bounds
-        if abs(clamped.origin.x - currentFrame.origin.x) < 1 &&
-           abs(clamped.origin.y - currentFrame.origin.y) < 1 &&
-           abs(clamped.width - currentFrame.width) < 1 &&
-           abs(clamped.height - currentFrame.height) < 1 {
+        // Only adjust if actually changed
+        if abs(target.origin.x - currentFrame.origin.x) < 1 &&
+           abs(target.origin.y - currentFrame.origin.y) < 1 &&
+           abs(target.width - currentFrame.width) < 1 &&
+           abs(target.height - currentFrame.height) < 1 {
             return
         }
 
-        AccessibilityManager.shared.setWindowFrame(windowID: windowID, cgFrame: clamped)
+        AccessibilityManager.shared.setWindowFrame(windowID: windowID, cgFrame: target)
     }
 }

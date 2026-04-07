@@ -275,6 +275,36 @@ final class AccessibilityManager {
         return CGRect(origin: pos, size: size)
     }
 
+    /// Constrain a window (by CG frame match) to stay within a target rect.
+    /// Used for popup/dialog windows that aren't the cached active work area window.
+    func constrainWindow(pid: pid_t, cgFrame: CGRect, within targetCG: CGRect) {
+        // Only reposition if the window is outside the target area
+        let centerX = cgFrame.midX
+        let centerY = cgFrame.midY
+        let inTarget = targetCG.contains(CGPoint(x: centerX, y: centerY))
+        if inTarget && cgFrame.width <= targetCG.width + 1 && cgFrame.height <= targetCG.height + 1 {
+            return
+        }
+
+        guard let axWin = findAXWindow(pid: pid, cgFrame: cgFrame) else { return }
+
+        var w = min(cgFrame.width, targetCG.width)
+        var h = min(cgFrame.height, targetCG.height)
+        var x = targetCG.origin.x + (targetCG.width - w) / 2
+        var y = targetCG.origin.y + (targetCG.height - h) / 2
+
+        var position = CGPoint(x: x, y: y)
+        var size = CGSize(width: w, height: h)
+        if w < cgFrame.width || h < cgFrame.height {
+            if let sizeValue = AXValueCreate(.cgSize, &size) {
+                AXUIElementSetAttributeValue(axWin, kAXSizeAttribute as CFString, sizeValue)
+            }
+        }
+        if let posValue = AXValueCreate(.cgPoint, &position) {
+            AXUIElementSetAttributeValue(axWin, kAXPositionAttribute as CFString, posValue)
+        }
+    }
+
     /// Set a window's frame directly (CG coords: top-left origin). Uses cached AX element.
     func setWindowFrame(windowID: CGWindowID, cgFrame: CGRect) {
         guard let cached = activeWorkAreaElement, cached.windowID == windowID else { return }

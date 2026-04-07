@@ -124,16 +124,32 @@ final class VirtualDisplayManager {
         }
     }
 
+    /// Assigned parking slots — guarantees each window gets a unique position.
+    private var parkingSlots: [CGWindowID: Int] = [:]
+    private var nextSlot: Int = 0
+
     /// Returns a unique position on the virtual display for a given window ID.
-    /// Deterministic: same window always parks at same spot.
+    /// Each window is assigned a distinct slot so same-PID windows never collide.
     func parkingPosition(for windowID: CGWindowID) -> CGPoint {
-        let idx = Int(windowID) % 100
-        let col = idx % 10
-        let row = idx / 10
+        let slot: Int
+        if let existing = parkingSlots[windowID] {
+            slot = existing
+        } else {
+            slot = nextSlot
+            parkingSlots[windowID] = slot
+            nextSlot += 1
+        }
+        let col = slot % 10
+        let row = slot / 10
         return CGPoint(
             x: origin.x + CGFloat(col) * 350 + 50,
             y: origin.y + CGFloat(row) * 250 + 50
         )
+    }
+
+    /// Release a parking slot when a window is unparked.
+    func releaseSlot(for windowID: CGWindowID) {
+        parkingSlots.removeValue(forKey: windowID)
     }
 
     // MARK: - Private (NSInvocation helpers for struct/multi-arg selectors)
