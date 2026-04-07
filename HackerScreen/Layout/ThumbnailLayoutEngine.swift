@@ -32,7 +32,7 @@ struct MissionControlLayoutEngine {
     let itemSpacing: CGFloat = 16
     let minimumThumbnailHeight: CGFloat = 80
     /// Space reserved above each thumbnail for the title header.
-    let headerHeight: CGFloat = 22
+    let headerHeight: CGFloat = 32
 
     // MARK: - Public
 

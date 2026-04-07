@@ -15,8 +15,6 @@ final class ThumbnailView: NSView {
     var onHoverEnd: (() -> Void)?
 
     private let imageLayer = CALayer()
-    /// Container for icon + label, positioned at top-center.
-    private let headerContainer = CALayer()
     private let iconLayer = CALayer()
     private let labelLayer = CATextLayer()
     private let activeOverlay = CALayer()
@@ -36,36 +34,39 @@ final class ThumbnailView: NSView {
     }
 
     /// Must match the layout engine's headerHeight.
-    static let headerHeight: CGFloat = 22
+    static let headerHeight: CGFloat = 32
 
     private func setup() {
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
         layer?.borderWidth = 0
 
+        // Thumbnail image
         imageLayer.contentsGravity = .resizeAspect
         imageLayer.cornerRadius = 8
         imageLayer.masksToBounds = true
+        imageLayer.shadowColor = NSColor.black.cgColor
+        imageLayer.shadowOpacity = 0.4
+        imageLayer.shadowRadius = 4
+        imageLayer.shadowOffset = CGSize(width: 0, height: -2)
         layer?.addSublayer(imageLayer)
 
-        // Header: semi-transparent pill ABOVE the image
-        headerContainer.backgroundColor = NSColor(white: 0, alpha: 0.55).cgColor
-        headerContainer.cornerRadius = 10
-        headerContainer.masksToBounds = true
-        layer?.addSublayer(headerContainer)
-
+        // App icon
         iconLayer.contentsGravity = .resizeAspect
         iconLayer.masksToBounds = true
-        headerContainer.addSublayer(iconLayer)
+        layer?.addSublayer(iconLayer)
 
-        labelLayer.fontSize = 10
-        labelLayer.foregroundColor = NSColor.white.cgColor
+        // Title — white text, no shadow, left-aligned
+        labelLayer.fontSize = 13
+        labelLayer.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        labelLayer.foregroundColor = NSColor.white.withAlphaComponent(0.85).cgColor
         labelLayer.backgroundColor = NSColor.clear.cgColor
         labelLayer.alignmentMode = .left
         labelLayer.truncationMode = .end
         labelLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
-        headerContainer.addSublayer(labelLayer)
+        layer?.addSublayer(labelLayer)
 
+        // Active overlay
         activeOverlay.backgroundColor = NSColor(white: 0.2, alpha: 0.6).cgColor
         activeOverlay.cornerRadius = 8
         activeOverlay.isHidden = true
@@ -81,6 +82,7 @@ final class ThumbnailView: NSView {
         activeLabel.isHidden = true
         layer?.addSublayer(activeLabel)
 
+        // Hint badge
         hintLayer.fontSize = 28
         hintLayer.font = NSFont.monospacedSystemFont(ofSize: 28, weight: .bold)
         hintLayer.foregroundColor = NSColor.white.cgColor
@@ -101,27 +103,21 @@ final class ThumbnailView: NSView {
         let imageRect = CGRect(x: 0, y: 0, width: bounds.width, height: bounds.height - hH)
         imageLayer.frame = imageRect
 
-        // Header pill above the image, horizontally centered
-        let iconSize: CGFloat = 14
-        let padH: CGFloat = 6
-        let padV: CGFloat = (hH - iconSize) / 2
-        let headerW = min(bounds.width, bounds.width * 0.9)
-        let headerX = (bounds.width - headerW) / 2
-        let headerY = bounds.height - hH  // AppKit: top of view
+        // Icon + label above the image, left-aligned
+        let iconSize: CGFloat = 28
+        let gap: CGFloat = 6
+        let labelH: CGFloat = 16
+        let iconY = bounds.height - hH + (hH - iconSize) / 2
+        let labelY = bounds.height - hH + (hH - labelH) / 2
 
-        headerContainer.frame = CGRect(x: headerX, y: headerY, width: headerW, height: hH)
-        iconLayer.frame = CGRect(x: padH, y: padV, width: iconSize, height: iconSize)
-        labelLayer.frame = CGRect(
-            x: padH + iconSize + 4,
-            y: padV,
-            width: headerW - padH * 2 - iconSize - 4,
-            height: iconSize
-        )
+        iconLayer.frame = CGRect(x: 0, y: iconY, width: iconSize, height: iconSize)
+        labelLayer.frame = CGRect(x: iconSize + gap, y: labelY, width: bounds.width - iconSize - gap, height: labelH)
 
-        // Active overlay and hint cover the image area only
+        // Active overlay covers image area
         activeOverlay.frame = imageRect
         activeLabel.frame = CGRect(x: 0, y: (imageRect.height - 16) / 2, width: imageRect.width, height: 16)
 
+        // Hint badge centered on image
         let hintSize: CGFloat = 40
         hintLayer.frame = CGRect(
             x: (bounds.width - hintSize) / 2,
