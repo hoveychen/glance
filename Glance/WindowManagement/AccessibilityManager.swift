@@ -252,13 +252,15 @@ final class AccessibilityManager {
     // MARK: - Virtual Display Operations
 
     /// Move a window to the virtual display. Saves original frame for restoration.
-    func moveToVirtualDisplay(windowID: CGWindowID, pid: pid_t, windowFrame: CGRect) {
+    /// Returns `true` if the window was successfully moved.
+    @discardableResult
+    func moveToVirtualDisplay(windowID: CGWindowID, pid: pid_t, windowFrame: CGRect) -> Bool {
         let vdm = VirtualDisplayManager.shared
-        guard vdm.isActive else { return }
+        guard vdm.isActive else { return false }
 
         guard let axWin = findAXWindowByID(windowID, pid: pid) ?? findAXWindow(pid: pid, cgFrame: windowFrame) else {
             logger.warning("moveToVirtualDisplay: could not find AX window for \(windowID) (\(pid))")
-            return
+            return false
         }
 
         // Save original frame before moving
@@ -269,12 +271,22 @@ final class AccessibilityManager {
         // Move to virtual display (AX coordinates: top-left origin)
         let target = vdm.parkingPosition(for: windowID)
         var position = target
-        if let posValue = AXValueCreate(.cgPoint, &position) {
-            AXUIElementSetAttributeValue(axWin, kAXPositionAttribute as CFString, posValue)
+        guard let posValue = AXValueCreate(.cgPoint, &position) else { return false }
+        let result = AXUIElementSetAttributeValue(axWin, kAXPositionAttribute as CFString, posValue)
+        if result != .success {
+            logger.warning("moveToVirtualDisplay: AX set position failed for \(windowID), error: \(result.rawValue)")
+            return false
+        }
+
+        // Verify the window actually moved toward the virtual display
+        if let newPos = getAXPosition(axWin), newPos.x < vdm.origin.x - 200 {
+            logger.warning("moveToVirtualDisplay: window \(windowID) didn't move to VD (pos: \(newPos.x), vdOrigin: \(vdm.origin.x))")
+            return false
         }
 
         // Remember where we parked it so we can find it later
         parkedPositions[windowID] = target
+        return true
     }
 
     /// Move a window back from the virtual display to its original position.

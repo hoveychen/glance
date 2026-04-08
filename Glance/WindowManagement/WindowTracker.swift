@@ -79,6 +79,20 @@ final class WindowTracker {
             self?.refreshWindows()
         }
         workspaceObservers.append(terminateObs)
+
+        // Refresh when the user switches Spaces — CGWindowList only returns
+        // windows on the current Space, so we need an immediate rescan.
+        let spaceObs = center.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // Small delay for the system to settle after space switch
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                self?.refreshWindows()
+            }
+        }
+        workspaceObservers.append(spaceObs)
     }
 
     func stopTracking() {

@@ -258,7 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func createOverlays() {
         destroyOverlays()
         for (idx, screen) in NSScreen.screens.enumerated() {
-            if screen.localizedName == "Glance" { continue }
+            if VirtualDisplayManager.shared.isVirtualDisplay(screen) { continue }
             let controller = OverlayWindowController(screen: screen)
             controller.onThumbnailClicked = { [weak self] windowInfo in
                 self?.handleThumbnailClick(windowInfo)
@@ -400,7 +400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Build screen regions
         var screenRegions: [ScreenRegion] = []
         for (idx, screen) in NSScreen.screens.enumerated() {
-            if screen.localizedName == "Glance" { continue }
+            if VirtualDisplayManager.shared.isVirtualDisplay(screen) { continue }
             let excluded = (idx == workAreaScreenIndex) ? fullAreaAppKit : nil
             screenRegions.append(ScreenRegion(
                 screenIndex: idx,
@@ -475,15 +475,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Park non-main windows to virtual display (skip main window — it's in the work area)
-        for (i, info) in thumbnailInfos.enumerated() {
+        for info in thumbnailInfos {
             if info.windowID == effectiveMainID { continue }
             if !parkedWindows.contains(info.windowID) {
-                AccessibilityManager.shared.moveToVirtualDisplay(
+                let success = AccessibilityManager.shared.moveToVirtualDisplay(
                     windowID: info.windowID,
                     pid: info.ownerPID,
                     windowFrame: info.frame
                 )
-                parkedWindows.insert(info.windowID)
+                if success {
+                    parkedWindows.insert(info.windowID)
+                }
             }
         }
 
@@ -807,7 +809,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Returns the NSScreen index for a point in AppKit coordinates.
     private func screenIndex(for point: CGPoint) -> Int {
         for (idx, screen) in NSScreen.screens.enumerated() {
-            if screen.localizedName == "Glance" { continue }
+            if VirtualDisplayManager.shared.isVirtualDisplay(screen) { continue }
             if screen.frame.contains(point) { return idx }
         }
         return 0
