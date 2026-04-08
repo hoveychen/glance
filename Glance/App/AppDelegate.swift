@@ -426,9 +426,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Always include the main window for layout
             if info.windowID == effectiveMainID { return true }
             // Exclude non-actual windows
-            if !info.isActualWindow { return false }
+            if !info.isActualWindow {
+                logger.warning("Thumbnail filter: excluded \(info.ownerName) '\(info.title)' wid=\(info.windowID) reason=notActualWindow level=\(info.windowLevel) subrole=\(info.axSubrole ?? "nil") frame=\(info.frame.width)x\(info.frame.height)")
+                return false
+            }
             // Same-PID: only AXStandardWindow gets a thumbnail (not dialogs, popups, etc.)
             if let mainPID, info.ownerPID == mainPID, info.axSubrole != "AXStandardWindow" {
+                logger.warning("Thumbnail filter: excluded \(info.ownerName) '\(info.title)' wid=\(info.windowID) reason=samePIDNonStandard subrole=\(info.axSubrole ?? "nil")")
                 return false
             }
             return true
@@ -872,7 +876,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func toggleHintMode() {
         if isHintMode {
             exitHintMode()
-            switchToPreviousWindow()
+            // Defer to next run loop cycle so activateWindow runs outside
+            // the event-monitor callback — activation is unreliable when
+            // called from within a CGEvent tap or global NSEvent monitor.
+            DispatchQueue.main.async { [weak self] in
+                self?.switchToPreviousWindow()
+            }
         } else {
             enterHintMode()
         }
@@ -979,7 +988,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            let windows = windowTracker.lastKnownWindows,
            let info = windows.first(where: { $0.windowID == windowID }) {
             exitHintMode()
-            handleThumbnailClick(info)
+            // Defer to next run loop cycle so activateWindow runs outside
+            // the CGEvent tap callback — activation is unreliable when
+            // called from within the tap's synchronous callback context.
+            DispatchQueue.main.async { [weak self] in
+                self?.handleThumbnailClick(info)
+            }
         } else {
             exitHintMode()
         }
