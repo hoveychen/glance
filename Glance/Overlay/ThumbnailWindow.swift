@@ -13,6 +13,8 @@ final class ThumbnailWindow: NSWindow {
     var onDragComplete: ((CGWindowID) -> Void)?
     var onHoverStart: ((CGWindowID) -> Void)?
     var onHoverEnd: ((CGWindowID) -> Void)?
+    /// Fires when an external file/text drag hovers long enough to trigger spring-loading.
+    var onDragSpringLoad: ((CGWindowID) -> Void)?
 
     var isActiveWindow: Bool {
         get { thumbnailView.isActiveWindow }
@@ -53,6 +55,10 @@ final class ThumbnailWindow: NSWindow {
         thumbnailView.onHoverEnd = { [weak self] in
             guard let self else { return }
             self.onHoverEnd?(self.windowID)
+        }
+        thumbnailView.onSpringLoadActivated = { [weak self] in
+            guard let self else { return }
+            self.onDragSpringLoad?(self.windowID)
         }
     }
 

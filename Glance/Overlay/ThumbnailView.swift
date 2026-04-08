@@ -13,6 +13,8 @@ final class ThumbnailView: NSView {
 
     var onHoverStart: (() -> Void)?
     var onHoverEnd: (() -> Void)?
+    /// Fires when a file/text drag hovers long enough to trigger spring-loading.
+    var onSpringLoadActivated: (() -> Void)?
 
     private let imageLayer = CALayer()
     private let iconLayer = CALayer()
@@ -22,6 +24,11 @@ final class ThumbnailView: NSView {
     private let hintLayer = CATextLayer()
     private var trackingArea: NSTrackingArea?
     private var isMouseInside = false
+    private var springLoadTimer: Timer?
+    private var isDragHovering = false
+
+    /// Seconds to hover with a drag before switching the window to the work area.
+    private static let springLoadDelay: TimeInterval = 2.0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -40,6 +47,12 @@ final class ThumbnailView: NSView {
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
         layer?.borderWidth = 0
+
+        // Accept external file / text drags for spring-loading (hover-to-switch).
+        registerForDraggedTypes([
+            .fileURL, .URL, .string,
+            NSPasteboard.PasteboardType("NSFilenamesPboardType"),
+        ])
 
         // Thumbnail image
         imageLayer.contentsGravity = .resizeAspect
@@ -210,6 +223,78 @@ final class ThumbnailView: NSView {
             imageLayer.borderColor = NSColor.systemGreen.withAlphaComponent(0.6).cgColor
             imageLayer.borderWidth = 2
         } else if !isMouseInside {
+            imageLayer.borderWidth = 0
+        }
+        CATransaction.commit()
+    }
+
+    // MARK: - Spring-Loading (Drag Hover to Switch)
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        // No point spring-loading the window that's already in the work area.
+        if isActiveWindow { return [] }
+        isDragHovering = true
+        showDragHighlight()
+        startSpringLoadTimer()
+        return .generic
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        isDragHovering ? .generic : []
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        cleanupDragState()
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        cleanupDragState()
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        cleanupDragState()
+        return false   // We never accept the drop — the real window will.
+    }
+
+    private func startSpringLoadTimer() {
+        springLoadTimer?.invalidate()
+        // Must add to .common modes — during a drag the run loop is in
+        // .eventTracking mode, so a default-mode timer would never fire.
+        let timer = Timer(timeInterval: Self.springLoadDelay, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.cleanupDragState()
+            self.onSpringLoadActivated?()
+        }
+        RunLoop.current.add(timer, forMode: .common)
+        springLoadTimer = timer
+    }
+
+    private func cleanupDragState() {
+        springLoadTimer?.invalidate()
+        springLoadTimer = nil
+        guard isDragHovering else { return }
+        isDragHovering = false
+        hideDragHighlight()
+    }
+
+    private func showDragHighlight() {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.15)
+        imageLayer.borderColor = NSColor.systemOrange.cgColor
+        imageLayer.borderWidth = 3
+        CATransaction.commit()
+    }
+
+    private func hideDragHighlight() {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.15)
+        if isActiveWindow {
+            imageLayer.borderColor = NSColor.systemGreen.withAlphaComponent(0.6).cgColor
+            imageLayer.borderWidth = 2
+        } else if isMouseInside {
+            imageLayer.borderColor = NSColor.systemBlue.cgColor
+            imageLayer.borderWidth = 3
+        } else {
             imageLayer.borderWidth = 0
         }
         CATransaction.commit()

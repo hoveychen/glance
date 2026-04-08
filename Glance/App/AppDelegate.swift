@@ -169,7 +169,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isActive = true
         logger.warning("Activating Glance layout.")
 
-        VirtualDisplayManager.shared.create()
+        if !VirtualDisplayManager.shared.create() {
+            logger.error("Failed to create virtual display — cannot activate Glance.")
+            isActive = false
+            return
+        }
 
         // Restore saved work area frame, or create default
         let waFrame: CGRect
@@ -274,6 +278,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             controller.onThumbnailHoverEnd = { [weak self] windowID in
                 self?.cancelHoverPreview()
+            }
+            controller.onThumbnailDragSpringLoad = { [weak self] windowID in
+                self?.handleDragSpringLoad(windowID: windowID)
             }
             overlayControllers[idx] = controller
         }
@@ -638,6 +645,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.windowTracker.forceUpdate()
         }
+    }
+
+    // MARK: - Spring-Loading (Drag to Switch)
+
+    /// An external file/text drag hovered over a thumbnail long enough — switch that window
+    /// into the work area so the user can drop onto it.
+    private func handleDragSpringLoad(windowID: CGWindowID) {
+        guard let windows = windowTracker.lastKnownWindows,
+              let info = windows.first(where: { $0.windowID == windowID }) else { return }
+        logger.info("Spring-load activated for: \(info.displayName)")
+        handleThumbnailClick(info)
     }
 
     // MARK: - Hover Preview

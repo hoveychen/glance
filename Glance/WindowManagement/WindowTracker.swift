@@ -3,6 +3,21 @@ import os.log
 
 private let logger = Logger(subsystem: "com.hoveychen.Glance", category: "WindowTracker")
 
+// MARK: - Private API: CGS Space filtering
+
+/// Connection to the window server.
+@_silgen_name("CGSMainConnectionID")
+func _CGSMainConnectionID() -> Int32
+
+/// Returns per-display space info (current space, all spaces, etc.).
+@_silgen_name("CGSCopyManagedDisplaySpaces")
+func _CGSCopyManagedDisplaySpaces(_ cid: Int32) -> CFArray
+
+/// Returns Space IDs that the given windows belong to.
+/// mask 0x7 = include all space types (current, others, fullscreen).
+@_silgen_name("CGSCopySpacesForWindows")
+func _CGSCopySpacesForWindows(_ cid: Int32, _ mask: Int32, _ wids: CFArray) -> CFArray
+
 /// Tracks all visible windows using CGWindowList + AX observers and reports changes.
 final class WindowTracker {
 
@@ -199,6 +214,21 @@ final class WindowTracker {
             kCGNullWindowID
         ) as? [[CFString: Any]] else { return }
 
+        // Collect the current (visible) Space ID on every display, so we can
+        // filter out windows from other Spaces (e.g., fullscreen apps on another
+        // desktop). CGSGetActiveSpace only returns the focused display's space —
+        // CGSCopyManagedDisplaySpaces covers all monitors.
+        let cid = _CGSMainConnectionID()
+        var visibleSpaceIDs = Set<Int>()
+        if let displaySpaces = _CGSCopyManagedDisplaySpaces(cid) as? [[String: Any]] {
+            for displayInfo in displaySpaces {
+                if let currentSpace = displayInfo["Current Space"] as? [String: Any],
+                   let spaceID = currentSpace["id64"] as? Int {
+                    visibleSpaceIDs.insert(spaceID)
+                }
+            }
+        }
+
         var newWindows: [WindowInfo] = []
         var seenIDs = Set<CGWindowID>()
         var seenPIDs = Set<pid_t>()
@@ -229,6 +259,21 @@ final class WindowTracker {
 
             // Skip tiny windows (likely hidden UI elements like tooltips, menus)
             if w < 50 || h < 50 { continue }
+
+            // Filter out windows from other Spaces (e.g., fullscreen apps on another desktop).
+            if !visibleSpaceIDs.isEmpty {
+                if let spaces = _CGSCopySpacesForWindows(cid, 0x7, [windowID as NSNumber] as CFArray) as? [NSNumber],
+                   !spaces.isEmpty {
+                    let windowSpaces = Set(spaces.map { $0.intValue })
+                    if windowSpaces.isDisjoint(with: visibleSpaceIDs) {
+                        // Not on any visible Space — skip unless it's on the virtual display
+                        let vdm = VirtualDisplayManager.shared
+                        if !vdm.isActive || x < vdm.origin.x - 100 {
+                            continue
+                        }
+                    }
+                }
+            }
 
             let frame = CGRect(x: x, y: y, width: w, height: h)
             let isOnScreen = entry[kCGWindowIsOnscreen] as? Bool ?? true
@@ -283,6 +328,7 @@ final class WindowTracker {
         // Enrich windows with AX classification data.
         // Rebuild AX cache for all seen PIDs, then query role/subrole per window.
         let axMgr = AccessibilityManager.shared
+        axMgr.cgWindowEntries = newWindows.map { ($0.windowID, $0.ownerPID, $0.title, $0.frame) }
         axMgr.rebuildAXCache(for: seenPIDs)
         for info in newWindows {
             // Skip re-classifying windows that already have AX data and are parked

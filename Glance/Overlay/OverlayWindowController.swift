@@ -9,6 +9,8 @@ final class OverlayWindowController {
     var onThumbnailDragComplete: ((CGWindowID) -> Void)?
     var onThumbnailHoverStart: ((CGWindowID) -> Void)?
     var onThumbnailHoverEnd: ((CGWindowID) -> Void)?
+    /// External file/text drag hovered long enough to trigger spring-loading.
+    var onThumbnailDragSpringLoad: ((CGWindowID) -> Void)?
 
     /// Window being dragged — skip animating it during layout updates.
     var draggingWindowID: CGWindowID?
@@ -71,6 +73,9 @@ final class OverlayWindowController {
                 }
                 thumbWindow.onHoverEnd = { [weak self] windowID in
                     self?.onThumbnailHoverEnd?(windowID)
+                }
+                thumbWindow.onDragSpringLoad = { [weak self] windowID in
+                    self?.onThumbnailDragSpringLoad?(windowID)
                 }
                 thumbWindow.orderFrontRegardless()
                 thumbnailWindows[slot.windowID] = thumbWindow

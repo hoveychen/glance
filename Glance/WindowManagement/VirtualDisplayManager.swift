@@ -112,6 +112,8 @@ final class VirtualDisplayManager {
         }
         if !found {
             logger.error("Virtual display not detected in NSScreen.screens after 5s. Screens: \(NSScreen.screens.map { "\($0.localizedName) id=\(($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) ?? 0) frame=\($0.frame)" }.joined(separator: ", "))")
+            destroy()
+            return false
         }
 
         return true

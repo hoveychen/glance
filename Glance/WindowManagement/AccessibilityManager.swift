@@ -47,6 +47,10 @@ final class AccessibilityManager {
         return err == .success && wid != 0 ? wid : nil
     }
 
+    /// Known CGWindowList entries for fallback matching when `_AXUIElementGetWindow` fails.
+    /// Set this before calling `rebuildAXCache` so we can match by title+position.
+    var cgWindowEntries: [(windowID: CGWindowID, pid: pid_t, title: String, frame: CGRect)] = []
+
     /// Build/refresh the CGWindowID → AXUIElement cache for a set of PIDs.
     /// Call this once per refresh cycle before using `findAXWindowByID`.
     func rebuildAXCache(for pids: Set<pid_t>) {
@@ -59,9 +63,50 @@ final class AccessibilityManager {
             for axWin in axWindows {
                 if let wid = getWindowID(for: axWin) {
                     axElementCache[wid] = axWin
+                } else {
+                    // _AXUIElementGetWindow failed — match by title + position against CGWindowList
+                    if let wid = matchCGWindowID(for: axWin, pid: pid) {
+                        axElementCache[wid] = axWin
+                    }
                 }
             }
         }
+    }
+
+    /// Match an AXUIElement to a CGWindowID using title + position when _AXUIElementGetWindow fails.
+    private func matchCGWindowID(for axWin: AXUIElement, pid: pid_t) -> CGWindowID? {
+        guard let axPos = getAXPosition(axWin) else { return nil }
+
+        var titleRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(axWin, kAXTitleAttribute as CFString, &titleRef)
+        let axTitle = titleRef as? String
+
+        var bestID: CGWindowID?
+        var bestDist: CGFloat = .infinity
+
+        for entry in cgWindowEntries where entry.pid == pid {
+            // Title must match (both empty counts as match)
+            let titleMatch = (axTitle ?? "") == entry.title
+            guard titleMatch else { continue }
+
+            let dx = abs(axPos.x - entry.frame.origin.x)
+            let dy = abs(axPos.y - entry.frame.origin.y)
+            let dist = dx + dy
+
+            if dist < bestDist {
+                bestDist = dist
+                bestID = entry.windowID
+            }
+        }
+
+        // Accept if position is within 50px (accounts for minor coordinate differences)
+        if bestDist < 50, let wid = bestID {
+            // Don't overwrite an existing cache entry from _AXUIElementGetWindow
+            if axElementCache[wid] == nil {
+                return wid
+            }
+        }
+        return nil
     }
 
     /// Find AXUIElement by CGWindowID using the cache. Falls back to enumeration.
@@ -76,6 +121,9 @@ final class AccessibilityManager {
               let axWindows = windowsRef as? [AXUIElement] else { return nil }
         for axWin in axWindows {
             if let wid = getWindowID(for: axWin) {
+                axElementCache[wid] = axWin
+                if wid == windowID { return axWin }
+            } else if let wid = matchCGWindowID(for: axWin, pid: pid) {
                 axElementCache[wid] = axWin
                 if wid == windowID { return axWin }
             }
@@ -445,14 +493,23 @@ final class AccessibilityManager {
     // MARK: - Private
 
     /// Find an AX window that was parked on the virtual display.
-    /// Uses the saved parked position for precise matching.
+    /// Prefers CGWindowID-based lookup (reliable for same-PID windows),
+    /// falls back to position matching if the ID bridge fails.
     private func findParkedAXWindow(windowID: CGWindowID, pid: pid_t) -> AXUIElement? {
+        // Prefer ID-based lookup via _AXUIElementGetWindow bridge.
+        // Position-based matching can return the wrong AX element when multiple
+        // windows of the same process are on the virtual display (e.g., during
+        // a swap between same-PID windows, both the old and new window are on VD).
+        if let axWin = findAXWindowByID(windowID, pid: pid) {
+            return axWin
+        }
+
         let app = AXUIElementCreateApplication(pid)
         var windowsRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef) == .success,
               let axWindows = windowsRef as? [AXUIElement] else { return nil }
 
-        // If we know the exact parked position, match by that
+        // Fallback: match by saved parked position
         if let parkedPos = parkedPositions[windowID] {
             for axWin in axWindows {
                 let pos = getAXPosition(axWin)
@@ -462,7 +519,7 @@ final class AccessibilityManager {
             }
         }
 
-        // Fallback: find any window on the virtual display
+        // Last resort: find any window on the virtual display
         let vdOriginX = VirtualDisplayManager.shared.origin.x
         for axWin in axWindows {
             if let pos = getAXPosition(axWin), pos.x >= vdOriginX - 100 {
