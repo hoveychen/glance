@@ -1,7 +1,7 @@
 import AppKit
 import os.log
 
-private let logger = Logger(subsystem: "com.hoveychen.HackerScreen", category: "App")
+private let logger = Logger(subsystem: "com.hoveychen.Glance", category: "App")
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
@@ -40,7 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isHintMode = false
     private var hintMapping: [String: CGWindowID] = [:]
     private var hintLocalMonitor: Any?
-    private var hintGlobalMonitor: Any?
+    private var hintEventTap: CFMachPort?
+    private var hintEventTapSource: CFRunLoopSource?
 
     /// Option short-press detection.
     private var optionDownTimestamp: TimeInterval = 0
@@ -55,16 +56,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The frosted-glass work area.
     private var workAreaWindow: WorkAreaWindow?
 
+    /// Onboarding controller (retained during permission phase).
+    private var onboardingController: OnboardingController?
+
+    /// Retained during the interactive guide phase (after app is activated).
+    private var onboardingGuide: OnboardingController?
+
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
-
-        if AXIsProcessTrusted() {
-            logger.warning("Accessibility: granted.")
-        } else {
-            logger.warning("Accessibility: NOT granted. Window management will be limited.")
-        }
 
         NotificationCenter.default.addObserver(
             self,
@@ -73,11 +74,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
+        // Check for updates (once per day)
+        UpdateChecker.shared.checkIfNeeded()
+
+        // Start onboarding if needed, otherwise activate directly
+        let onboarding = OnboardingController()
+        onboarding.onComplete = { [weak self] in
+            guard let self else { return }
+            let isFirstLaunch = !UserDefaults.standard.bool(forKey: "onboardingCompleted")
+            self.onboardingController = nil  // Clear so activate() proceeds
+            self.setupEventMonitors()
+            self.activate()
+
+            // Show interactive guide over the real running app on first launch
+            if isFirstLaunch, let wa = self.workAreaWindow {
+                self.onboardingGuide = onboarding
+                onboarding.showGuide(workArea: wa) { [weak self] in
+                    self?.onboardingGuide = nil
+                }
+            }
+        }
+        onboardingController = onboarding
+        onboarding.start()
+    }
+
+    private func setupEventMonitors() {
         NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if event.modifierFlags.contains([.control, .option]) && event.keyCode == 4 {
                 self?.toggleActive()
             }
-            // Any key pressed while Option is held → not a short-press
             if self?.optionDownTimestamp != 0 {
                 self?.optionWasCombined = true
             }
@@ -87,14 +112,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.toggleActive()
                 return nil
             }
-            // Any key pressed while Option is held → not a short-press
             if self?.optionDownTimestamp != 0 {
                 self?.optionWasCombined = true
             }
             return event
         }
 
-        // Monitor Option key press/release for short-press detection
         NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
             self?.handleFlagsChanged(event)
         }
@@ -102,8 +125,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.handleFlagsChanged(event)
             return event
         }
-
-        activate()
     }
 
     // MARK: - Status Bar
@@ -111,14 +132,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "rectangle.grid.3x2", accessibilityDescription: "HackerScreen")
+            button.image = NSImage(systemSymbolName: "rectangle.grid.3x2", accessibilityDescription: "Glance")
         }
 
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Toggle (\u{2303}\u{2325}H)", action: #selector(toggleActive), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Show Guide", action: #selector(showGuideAgain), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
         statusItem.menu = menu
+    }
+
+    @objc private func checkForUpdates() {
+        UpdateChecker.shared.checkNow()
     }
 
     @objc private func quitApp() {
@@ -126,12 +153,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.terminate(nil)
     }
 
+    @objc private func showGuideAgain() {
+        guard isActive, onboardingGuide == nil, let wa = workAreaWindow else { return }
+        let guide = OnboardingController()
+        onboardingGuide = guide
+        guide.showGuide(workArea: wa) { [weak self] in
+            self?.onboardingGuide = nil
+        }
+    }
+
     // MARK: - Activation
 
     private func activate() {
-        guard !isActive else { return }
+        guard !isActive, onboardingController == nil else { return }
         isActive = true
-        logger.warning("Activating HackerScreen layout.")
+        logger.warning("Activating Glance layout.")
 
         VirtualDisplayManager.shared.create()
 
@@ -167,7 +203,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func deactivate() {
         guard isActive else { return }
         isActive = false
-        logger.warning("Deactivating HackerScreen layout.")
+        logger.warning("Deactivating Glance layout.")
+
+        // Cancel onboarding guide if still showing
+        if let guide = onboardingGuide {
+            guide.cancelGuide()
+            onboardingGuide = nil
+        }
 
         windowTracker.stopTracking()
         captureManager.stopAll()
@@ -216,7 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func createOverlays() {
         destroyOverlays()
         for (idx, screen) in NSScreen.screens.enumerated() {
-            if screen.localizedName == "HackerScreen" { continue }
+            if screen.localizedName == "Glance" { continue }
             let controller = OverlayWindowController(screen: screen)
             controller.onThumbnailClicked = { [weak self] windowInfo in
                 self?.handleThumbnailClick(windowInfo)
@@ -295,9 +337,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Must not be the current main, must not be already parked, must be a real new window
             id != effectiveMainID && !parkedWindows.contains(id)
         }), let newInfo = windows.first(where: { $0.windowID == newID }) {
-            // Skip if it's same PID as current main (popup/dialog)
-            if let mainPID = currentMainPID, newInfo.ownerPID == mainPID {
-                // Don't auto-swap for popups
+            // Skip if it's a small same-PID popup/dialog (< 40% of main window area).
+            // Large same-PID windows (e.g. new browser window) should still auto-swap.
+            let isSmallSamePIDPopup: Bool = {
+                guard let mainPID = currentMainPID, newInfo.ownerPID == mainPID else { return false }
+                guard let mainWin = windows.first(where: { $0.windowID == effectiveMainID }) else { return false }
+                let mainArea = mainWin.frame.width * mainWin.frame.height
+                let newArea = newInfo.frame.width * newInfo.frame.height
+                return newArea < mainArea * 0.4
+            }()
+            if isSmallSamePIDPopup {
+                // Don't auto-swap for small popups
             } else {
                 // Auto-swap: park current main, make new window the main
                 logger.warning("New window detected: \(newInfo.displayName), auto-swapping to work area")
@@ -308,10 +358,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         workAreaPositions[oldID] = currentFrame
                     }
                     if let oldInfo = windows.first(where: { $0.windowID == oldID }) {
-                        AccessibilityManager.shared.parkMainWindow(
-                            windowID: oldID, pid: oldInfo.ownerPID
+                        let parked = AccessibilityManager.shared.parkMainWindow(
+                            windowID: oldID, pid: oldInfo.ownerPID, cgFrame: oldInfo.frame
                         )
-                        parkedWindows.insert(oldID)
+                        if parked {
+                            parkedWindows.insert(oldID)
+                        } else {
+                            logger.warning("Auto-swap: failed to park \(oldInfo.displayName), will retry next cycle")
+                        }
                     }
                 }
                 effectiveMainID = newID
@@ -336,7 +390,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Build screen regions
         var screenRegions: [ScreenRegion] = []
         for (idx, screen) in NSScreen.screens.enumerated() {
-            if screen.localizedName == "HackerScreen" { continue }
+            if screen.localizedName == "Glance" { continue }
             let excluded = (idx == workAreaScreenIndex) ? fullAreaAppKit : nil
             screenRegions.append(ScreenRegion(
                 screenIndex: idx,
@@ -393,6 +447,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for slot in slots {
             if let info = thumbnailInfos.first(where: { $0.windowID == slot.windowID }) {
                 info.originalScreenIndex = slot.screenIndex
+            }
+        }
+
+        // Self-healing: detect windows marked as parked but actually still on a real screen.
+        // This can happen if a prior parkMainWindow call failed silently.
+        let vdOriginX = VirtualDisplayManager.shared.origin.x
+        for info in windows where info.windowID != effectiveMainID {
+            if parkedWindows.contains(info.windowID) && info.frame.origin.x < vdOriginX - 100 {
+                logger.warning("Recovery: window \(info.displayName) (\(info.windowID)) marked parked but on real screen, will re-park")
+                parkedWindows.remove(info.windowID)
             }
         }
 
@@ -494,6 +558,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Clicking the current main window's placeholder — no-op
         if clickedInfo.windowID == currentMainWindowID { return }
 
+        NotificationCenter.default.post(name: .glanceThumbnailClicked, object: nil)
+
         logger.warning("Swapping to window: \(clickedInfo.displayName)")
 
         let oldMainID = currentMainWindowID
@@ -514,11 +580,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let oldID = oldMainID,
            let windows = windowTracker.lastKnownWindows,
            let oldMainInfo = windows.first(where: { $0.windowID == oldID }) {
-            AccessibilityManager.shared.parkMainWindow(
+            let parked = AccessibilityManager.shared.parkMainWindow(
                 windowID: oldID,
-                pid: oldMainInfo.ownerPID
+                pid: oldMainInfo.ownerPID,
+                cgFrame: oldMainInfo.frame
             )
-            parkedWindows.insert(oldID)
+            if parked {
+                parkedWindows.insert(oldID)
+            }
         }
 
         // Bring clicked window from virtual display to work area
@@ -532,9 +601,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             targetFrame: target
         )
 
-        // Set new main and activate
+        // Set new main and activate.
+        // Use silent setter to avoid triggering handleWindowsUpdate with stale
+        // CGWindowList data — the just-parked window's frame hasn't been refreshed yet,
+        // so self-healing would incorrectly un-park it and the parking loop could
+        // match the wrong same-PID window via findAXWindow.
+        currentMainWindowID = clickedInfo.windowID
         currentMainPID = clickedInfo.ownerPID
-        windowTracker.setMainWindow(clickedInfo.windowID)
+        windowTracker.setMainWindowSilently(clickedInfo.windowID)
+
+        // Update thumbnail active indicators immediately (layout refreshes on forceUpdate)
+        for (_, controller) in overlayControllers {
+            controller.activeWindowID = clickedInfo.windowID
+        }
+
         AccessibilityManager.shared.activateWindow(pid: clickedInfo.ownerPID, windowTitle: clickedInfo.title)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
@@ -714,7 +794,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Returns the NSScreen index for a point in AppKit coordinates.
     private func screenIndex(for point: CGPoint) -> Int {
         for (idx, screen) in NSScreen.screens.enumerated() {
-            if screen.localizedName == "HackerScreen" { continue }
+            if screen.localizedName == "Glance" { continue }
             if screen.frame.contains(point) { return idx }
         }
         return 0
@@ -756,14 +836,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func toggleHintMode() {
         if isHintMode {
             exitHintMode()
+            switchToPreviousWindow()
         } else {
             enterHintMode()
         }
     }
 
+    /// Pop the main-window stack and switch back to the previous window.
+    private func switchToPreviousWindow() {
+        guard let windows = windowTracker.lastKnownWindows else { return }
+        let allKnownNow = Set(windows.map(\.windowID))
+        // Clean stale entries and duplicates of the current window
+        mainWindowStack.removeAll { !allKnownNow.contains($0) || $0 == currentMainWindowID }
+
+        guard let previousID = mainWindowStack.popLast(),
+              let info = windows.first(where: { $0.windowID == previousID }) else {
+            return
+        }
+        handleThumbnailClick(info)
+    }
+
     private func enterHintMode() {
         guard isActive, !isHintMode else { return }
         isHintMode = true
+        NotificationCenter.default.post(name: .glanceOptionKeyPressed, object: nil)
         hintMapping.removeAll()
 
         var idx = 0
@@ -772,13 +868,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hintMapping.merge(partial) { _, new in new }
         }
 
-        // Listen for key press — both local (when our app is focused) and global (other apps focused)
+        // Local monitor for when Glance itself is focused
         hintLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handleHintKey(event)
-            return nil
+            return nil  // consume the event
         }
-        hintGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            self?.handleHintKey(event)
+
+        // CGEvent tap to intercept (not just observe) key events globally.
+        // This prevents keystrokes from leaking to the foreground app and
+        // bypasses input method interference on non-English systems.
+        let eventMask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
+        let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,       // actively filters (can suppress) events
+            eventsOfInterest: eventMask,
+            callback: { _, _, event, refcon -> Unmanaged<CGEvent>? in
+                guard let refcon else { return Unmanaged.passRetained(event) }
+                let delegate = Unmanaged<AppDelegate>.fromOpaque(refcon).takeUnretainedValue()
+                guard delegate.isHintMode else { return Unmanaged.passRetained(event) }
+                let nsEvent = NSEvent(cgEvent: event)!
+                delegate.handleHintKey(nsEvent)
+                return nil  // suppress the event — do not deliver to foreground app
+            },
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        )
+        if let tap {
+            hintEventTap = tap
+            let source = CFMachPortCreateRunLoopSource(nil, tap, 0)
+            hintEventTapSource = source
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+            CGEvent.tapEnable(tap: tap, enable: true)
         }
     }
 
@@ -795,9 +915,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSEvent.removeMonitor(monitor)
             hintLocalMonitor = nil
         }
-        if let monitor = hintGlobalMonitor {
-            NSEvent.removeMonitor(monitor)
-            hintGlobalMonitor = nil
+        if let tap = hintEventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            if let source = hintEventTapSource {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+                hintEventTapSource = nil
+            }
+            hintEventTap = nil
         }
     }
 

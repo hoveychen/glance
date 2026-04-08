@@ -1,7 +1,7 @@
 import AppKit
 import os.log
 
-private let logger = Logger(subsystem: "com.hoveychen.HackerScreen", category: "Capture")
+private let logger = Logger(subsystem: "com.hoveychen.Glance", category: "Capture")
 
 /// Manages periodic window thumbnail capture using CGWindowListCreateImage.
 /// Unlike SCStream, this approach does not trigger the system recording indicator.

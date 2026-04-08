@@ -1,20 +1,22 @@
 #!/bin/bash
 set -euo pipefail
 
-SCHEME="HackerScreen"
+SCHEME="Glance"
 CONFIG="Release"
 BUILD_DIR="build"
-APP_NAME="HackerScreen"
-DMG_NAME="HackerScreen.dmg"
+APP_NAME="Glance"
+DMG_NAME="Glance.dmg"
 
 echo "==> Generating Xcode project..."
 xcodegen generate
 
-echo "==> Building ${SCHEME} (${CONFIG})..."
+echo "==> Building ${SCHEME} (${CONFIG}, dev)..."
 xcodebuild -project ${APP_NAME}.xcodeproj \
   -scheme ${SCHEME} \
   -configuration ${CONFIG} \
   -derivedDataPath ${BUILD_DIR} \
+  PRODUCT_BUNDLE_IDENTIFIER=com.hoveychen.Glance.dev \
+  BUNDLE_DISPLAY_NAME="Glance Dev" \
   build | tail -3
 
 APP_PATH="${BUILD_DIR}/Build/Products/${CONFIG}/${APP_NAME}.app"

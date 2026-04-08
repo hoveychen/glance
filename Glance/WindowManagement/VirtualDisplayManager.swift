@@ -2,7 +2,7 @@ import AppKit
 import ObjectiveC
 import os.log
 
-private let logger = Logger(subsystem: "com.hoveychen.HackerScreen", category: "VirtualDisplay")
+private let logger = Logger(subsystem: "com.hoveychen.Glance", category: "VirtualDisplay")
 
 /// Creates and manages a hidden virtual display where non-main windows are moved to.
 /// Windows on the virtual display can still be captured via CGWindowListCreateImage.
@@ -45,9 +45,9 @@ final class VirtualDisplayManager {
         let descObj = descClass.alloc().perform(NSSelectorFromString("init"))!
             .takeUnretainedValue()
 
-        let queue = DispatchQueue(label: "com.hoveychen.HackerScreen.vd")
+        let queue = DispatchQueue(label: "com.hoveychen.Glance.vd")
         descObj.perform(NSSelectorFromString("setDispatchQueue:"), with: queue)
-        descObj.perform(NSSelectorFromString("setName:"), with: "HackerScreen" as NSString)
+        descObj.perform(NSSelectorFromString("setName:"), with: "Glance" as NSString)
 
         // Use NSNumber for UInt32 setters via perform
         descObj.perform(NSSelectorFromString("setMaxPixelsWide:"), with: NSNumber(value: 3840))
@@ -113,7 +113,7 @@ final class VirtualDisplayManager {
     /// Refresh the virtual screen coordinates from NSScreen.
     func refreshScreenCoordinates() {
         guard isActive else { return }
-        if let vScreen = NSScreen.screens.first(where: { $0.localizedName == "HackerScreen" }) {
+        if let vScreen = NSScreen.screens.first(where: { $0.localizedName == "Glance" }) {
             let vf = vScreen.frame
             let mainH = NSScreen.main?.frame.height ?? 0
             origin = CGPoint(x: vf.origin.x, y: mainH - vf.origin.y - vf.height)

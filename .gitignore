@@ -1,5 +1,5 @@
 # Xcode
-HackerScreen.xcodeproj/
+Glance.xcodeproj/
 build/
 DerivedData/
 *.xcuserstate
@@ -17,3 +17,4 @@ test_*
 *.app
 *.dmg
 *.zip
+build_check/

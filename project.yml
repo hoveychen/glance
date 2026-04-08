@@ -1,4 +1,4 @@
-name: HackerScreen
+name: Glance
 options:
   bundleIdPrefix: com.hoveychen
   deploymentTarget:
@@ -9,22 +9,27 @@ settings:
     SWIFT_VERSION: "5.10"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
 targets:
-  HackerScreen:
+  Glance:
     type: application
     platform: macOS
     sources:
-      - HackerScreen
+      - Glance
     settings:
       base:
-        INFOPLIST_FILE: HackerScreen/App/Info.plist
-        CODE_SIGN_ENTITLEMENTS: HackerScreen/App/HackerScreen.entitlements
-        PRODUCT_BUNDLE_IDENTIFIER: com.hoveychen.HackerScreen
+        INFOPLIST_FILE: Glance/App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Glance/App/Glance.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: com.hoveychen.Glance
         ENABLE_APP_SANDBOX: NO
         ENABLE_HARDENED_RUNTIME: YES
         LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 6HU93XQG5B
+      configs:
+        Debug:
+          BUNDLE_DISPLAY_NAME: "Glance Dev"
+        Release:
+          BUNDLE_DISPLAY_NAME: "Glance"
     entitlements:
-      path: HackerScreen/App/HackerScreen.entitlements
+      path: Glance/App/Glance.entitlements
       properties:
         com.apple.security.app-sandbox: false

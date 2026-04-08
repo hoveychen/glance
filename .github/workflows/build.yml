@@ -46,8 +46,8 @@ jobs:
         env:
           BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
         run: |
-          xcodebuild -project HackerScreen.xcodeproj \
-            -scheme HackerScreen \
+          xcodebuild -project Glance.xcodeproj \
+            -scheme Glance \
             -configuration Release \
             -derivedDataPath build \
             CODE_SIGN_STYLE=Manual \
@@ -60,8 +60,8 @@ jobs:
         env:
           BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
         run: |
-          xcodebuild -project HackerScreen.xcodeproj \
-            -scheme HackerScreen \
+          xcodebuild -project Glance.xcodeproj \
+            -scheme Glance \
             -configuration Release \
             -derivedDataPath build \
             CODE_SIGN_IDENTITY="-" \
@@ -76,8 +76,8 @@ jobs:
           NOTARIZE_PASSWORD: ${{ secrets.NOTARIZE_PASSWORD }}
           NOTARIZE_TEAM_ID: ${{ secrets.DEVELOPMENT_TEAM }}
         run: |
-          APP_PATH="build/Build/Products/Release/HackerScreen.app"
-          ZIP_PATH="$RUNNER_TEMP/HackerScreen-notarize.zip"
+          APP_PATH="build/Build/Products/Release/Glance.app"
+          ZIP_PATH="$RUNNER_TEMP/Glance-notarize.zip"
 
           # Create zip for notarization
           ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
@@ -94,14 +94,14 @@ jobs:
 
       - name: Package DMG
         run: |
-          APP_PATH="build/Build/Products/Release/HackerScreen.app"
-          DMG_PATH="HackerScreen.dmg"
+          APP_PATH="build/Build/Products/Release/Glance.app"
+          DMG_PATH="Glance.dmg"
 
           mkdir -p dmg_contents
           cp -R "$APP_PATH" dmg_contents/
           ln -s /Applications dmg_contents/Applications
 
-          hdiutil create -volname "HackerScreen" \
+          hdiutil create -volname "Glance" \
             -srcfolder dmg_contents \
             -ov -format UDZO \
             "$DMG_PATH"
@@ -109,14 +109,14 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: HackerScreen
-          path: HackerScreen.dmg
+          name: Glance
+          path: Glance.dmg
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: HackerScreen.dmg
+          files: Glance.dmg
           generate_release_notes: true
 
       - name: Cleanup keychain

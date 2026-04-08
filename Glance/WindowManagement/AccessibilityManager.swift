@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 import os.log
 
-private let logger = Logger(subsystem: "com.hoveychen.HackerScreen", category: "Accessibility")
+private let logger = Logger(subsystem: "com.hoveychen.Glance", category: "Accessibility")
 
 /// Manages window operations via the macOS Accessibility API.
 final class AccessibilityManager {
@@ -104,15 +104,21 @@ final class AccessibilityManager {
     }
 
     /// Park the current main window from the work area to the virtual display.
-    /// Uses the cached AX element — no frame matching needed.
-    func parkMainWindow(windowID: CGWindowID, pid: pid_t) {
+    /// Returns `true` if the window was successfully moved.
+    @discardableResult
+    func parkMainWindow(windowID: CGWindowID, pid: pid_t, cgFrame: CGRect? = nil) -> Bool {
         let vdm = VirtualDisplayManager.shared
-        guard vdm.isActive else { return }
+        guard vdm.isActive else { return false }
 
         // Try cached element first
         var axWin: AXUIElement?
         if let cached = activeWorkAreaElement, cached.windowID == windowID {
             axWin = cached.element
+        }
+
+        // Fallback: find by frame match (more reliable than focused/first window for multi-window apps)
+        if axWin == nil, let frame = cgFrame {
+            axWin = findAXWindow(pid: pid, cgFrame: frame)
         }
 
         // Fallback: try focused window of the app
@@ -124,19 +130,9 @@ final class AccessibilityManager {
             }
         }
 
-        // Last resort: first window of the app
-        if axWin == nil {
-            let app = AXUIElementCreateApplication(pid)
-            var ref: CFTypeRef?
-            if AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &ref) == .success,
-               let wins = ref as? [AXUIElement], let first = wins.first {
-                axWin = first
-            }
-        }
-
         guard let window = axWin else {
             logger.warning("parkMainWindow: could not find AX window for \(windowID)")
-            return
+            return false
         }
 
         // Save original frame if not already saved
@@ -146,12 +142,22 @@ final class AccessibilityManager {
 
         let target = vdm.parkingPosition(for: windowID)
         var position = target
-        if let posValue = AXValueCreate(.cgPoint, &position) {
-            AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, posValue)
+        guard let posValue = AXValueCreate(.cgPoint, &position) else { return false }
+        let result = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, posValue)
+        if result != .success {
+            logger.warning("parkMainWindow: AX set position failed for \(windowID), error: \(result.rawValue)")
+            return false
+        }
+
+        // Verify the window actually moved toward the virtual display
+        if let newPos = getAXPosition(window), newPos.x < vdm.origin.x - 200 {
+            logger.warning("parkMainWindow: window \(windowID) didn't move to VD (pos: \(newPos.x))")
+            return false
         }
 
         parkedPositions[windowID] = target
         activeWorkAreaElement = nil
+        return true
     }
 
     // MARK: - Virtual Display Operations
@@ -397,7 +403,10 @@ final class AccessibilityManager {
         // Looser fallback: just position match
         if bestDist < 200 { return bestMatch }
 
-        return axWindows.first
+        // Only return the first window if it's the app's sole window.
+        // For multi-window apps (e.g. two VS Code windows), returning
+        // an arbitrary window is worse than returning nil.
+        return axWindows.count == 1 ? axWindows.first : nil
     }
 
     private func getAXPosition(_ element: AXUIElement) -> CGPoint? {

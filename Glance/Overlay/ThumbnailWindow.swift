@@ -1,7 +1,7 @@
 import AppKit
 import os.log
 
-private let logger = Logger(subsystem: "com.hoveychen.HackerScreen", category: "ThumbnailWindow")
+private let logger = Logger(subsystem: "com.hoveychen.Glance", category: "ThumbnailWindow")
 
 /// A small borderless window that displays a single thumbnail.
 /// Each thumbnail is its own window so it doesn't block the center area.

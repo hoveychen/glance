@@ -69,7 +69,7 @@ struct MissionControlLayoutEngine {
     /// Compute available rectangular zones from a screen, excluding the main window rect.
     /// Adaptively prioritizes the direction (horizontal or vertical) with more available space,
     /// giving those zones full extent while constraining the other direction to the excluded rect's span.
-    private func computeZones(screenFrame: CGRect, excludedRect: CGRect?) -> [CGRect] {
+    func computeZones(screenFrame: CGRect, excludedRect: CGRect?) -> [CGRect] {
         let padded = screenFrame.insetBy(dx: edgePadding, dy: edgePadding)
 
         guard let excluded = excludedRect else {

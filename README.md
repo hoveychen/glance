@@ -1,14 +1,14 @@
-# HackerScreen
+# Glance
 
-**Turn your Mac into a command center.** HackerScreen replaces the clutter of overlapping windows with a clean, always-visible layout — your main window front and center, everything else as live thumbnails at your fingertips.
+**Turn your Mac into a command center.** Glance replaces the clutter of overlapping windows with a clean, always-visible layout — your main window front and center, everything else as live thumbnails at your fingertips.
 
 ![macOS 14+](https://img.shields.io/badge/macOS-14.0%2B-blue) ![Swift](https://img.shields.io/badge/Swift-5.10-orange) ![License](https://img.shields.io/badge/license-MIT-green)
 
-## Why HackerScreen?
+## Why Glance?
 
 If you regularly juggle 10+ windows, you know the pain: `Cmd+Tab` is slow, Mission Control is a blur of rectangles, and Stage Manager never quite gets it right.
 
-HackerScreen takes a different approach:
+Glance takes a different approach:
 
 - **One focused window** lives in a frosted-glass work area — always visible, never buried
 - **Everything else** becomes a live thumbnail arranged around it — no hunting, no guessing
@@ -40,7 +40,7 @@ Newly opened windows automatically move into the work area so you never miss the
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl + Option + H` | Toggle HackerScreen on/off |
+| `Ctrl + Option + H` | Toggle Glance on/off |
 | `Option` (double-tap) | Enter quick-switch hint mode |
 | `1-9`, `A-Z` | Jump to window (in hint mode) |
 | `Esc` | Exit hint mode |
@@ -49,31 +49,31 @@ Newly opened windows automatically move into the work area so you never miss the
 
 ### Download
 
-Grab the latest `HackerScreen.dmg` from the [Releases](../../releases) page. Open the DMG and drag **HackerScreen** to your Applications folder.
+Grab the latest `Glance.dmg` from the [Releases](../../releases) page. Open the DMG and drag **Glance** to your Applications folder.
 
 ### Build from Source
 
 Requires [XcodeGen](https://github.com/yonaskolb/XcodeGen) and Xcode 16+.
 
 ```bash
-git clone https://github.com/hoveychen/hacker-screen.git
-cd hacker-screen
+git clone https://github.com/hoveychen/glance.git
+cd glance
 ./build.sh
-open build/Build/Products/Release/HackerScreen.app
+open build/Build/Products/Release/Glance.app
 ```
 
 ## Setup
 
 On first launch, macOS will ask for two permissions:
 
-1. **Accessibility** — needed to move and resize windows. Go to **System Settings > Privacy & Security > Accessibility** and enable HackerScreen.
-2. **Screen Recording** — needed to capture live window thumbnails. Go to **System Settings > Privacy & Security > Screen Recording** and enable HackerScreen.
+1. **Accessibility** — needed to move and resize windows. Go to **System Settings > Privacy & Security > Accessibility** and enable Glance.
+2. **Screen Recording** — needed to capture live window thumbnails. Go to **System Settings > Privacy & Security > Screen Recording** and enable Glance.
 
-HackerScreen runs as a menu bar app (no Dock icon). Click the status bar icon to toggle it on or off.
+Glance runs as a menu bar app (no Dock icon). Click the status bar icon to toggle it on or off.
 
 ## How It Works
 
-HackerScreen creates a hidden virtual display behind the scenes. Non-focused windows are parked there — they remain fully alive and functional, just not visible on your physical screens. Their contents are captured as live thumbnails and displayed as overlay windows around your work area. When you click or keyboard-select a thumbnail, the parked window swaps back onto your real screen and the previously active window takes its place on the virtual display.
+Glance creates a hidden virtual display behind the scenes. Non-focused windows are parked there — they remain fully alive and functional, just not visible on your physical screens. Their contents are captured as live thumbnails and displayed as overlay windows around your work area. When you click or keyboard-select a thumbnail, the parked window swaps back onto your real screen and the previously active window takes its place on the virtual display.
 
 The result: one window in focus, everything else a glance away, zero overlap.
 

@@ -60,6 +60,12 @@ final class WindowTracker {
         notifyUpdate()
     }
 
+    /// Set the main window ID without triggering an update notification.
+    /// Use when the caller will trigger a fresh update separately (e.g., via forceUpdate).
+    func setMainWindowSilently(_ windowID: CGWindowID) {
+        mainWindowID = windowID
+    }
+
     // MARK: - Private
 
     private func refreshWindows() {
