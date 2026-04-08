@@ -325,7 +325,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     ?? windowTracker.lastKnownWindows?.first(where: { $0.windowID == fallbackID }) {
                 logger.warning("Falling back to: \(fallbackInfo.displayName)")
                 effectiveMainID = fallbackID
-                windowTracker.setMainWindow(fallbackID)
+                // Use silent setter to avoid re-entrant handleWindowsUpdate.
+                // The current call will complete with the correct effectiveMainID.
+                windowTracker.setMainWindowSilently(fallbackID)
             }
         }
 
@@ -379,7 +381,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
                 effectiveMainID = newID
-                windowTracker.setMainWindow(newID)
+                // Use silent setter to avoid re-entrant handleWindowsUpdate.
+                windowTracker.setMainWindowSilently(newID)
             }
         }
 
