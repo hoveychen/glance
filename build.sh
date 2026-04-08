@@ -17,6 +17,8 @@ xcodebuild -project ${APP_NAME}.xcodeproj \
   -derivedDataPath ${BUILD_DIR} \
   PRODUCT_BUNDLE_IDENTIFIER=com.hoveychen.Glance.dev \
   BUNDLE_DISPLAY_NAME="Glance Dev" \
+  ARCHS="arm64 x86_64" \
+  ONLY_ACTIVE_ARCH=NO \
   build | tail -3
 
 APP_PATH="${BUILD_DIR}/Build/Products/${CONFIG}/${APP_NAME}.app"
