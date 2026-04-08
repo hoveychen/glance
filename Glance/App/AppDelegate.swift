@@ -337,17 +337,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Must not be the current main, must not be already parked, must be a real new window
             id != effectiveMainID && !parkedWindows.contains(id)
         }), let newInfo = windows.first(where: { $0.windowID == newID }) {
-            // Skip if it's a small same-PID popup/dialog (< 40% of main window area).
-            // Large same-PID windows (e.g. new browser window) should still auto-swap.
-            let isSmallSamePIDPopup: Bool = {
-                guard let mainPID = currentMainPID, newInfo.ownerPID == mainPID else { return false }
-                guard let mainWin = windows.first(where: { $0.windowID == effectiveMainID }) else { return false }
-                let mainArea = mainWin.frame.width * mainWin.frame.height
-                let newArea = newInfo.frame.width * newInfo.frame.height
-                return newArea < mainArea * 0.4
+            // Use AX subrole classification: skip popups, dialogs, sheets, floating panels.
+            // Same-PID non-standard windows (AXDialog, AXSheet, AXFloatingWindow) are
+            // constrained to the work area instead of auto-swapped.
+            let shouldSkipAutoSwap: Bool = {
+                // Popups/dialogs from the same app → don't swap
+                if let mainPID = currentMainPID, newInfo.ownerPID == mainPID, newInfo.isPopupOrDialog {
+                    return true
+                }
+                // Non-actual windows (non-zero level, floating, unknown tiny) → don't swap
+                if !newInfo.isActualWindow {
+                    return true
+                }
+                return false
             }()
-            if isSmallSamePIDPopup {
-                // Don't auto-swap for small popups
+            if shouldSkipAutoSwap {
+                // Don't auto-swap for popups/dialogs/non-actual windows
             } else {
                 // Auto-swap: park current main, make new window the main
                 logger.warning("New window detected: \(newInfo.displayName), auto-swapping to work area")
@@ -399,14 +404,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ))
         }
 
-        // Thumbnail candidates: all windows except small same-PID popups.
+        // Thumbnail candidates: actual windows only (based on AX subrole classification).
+        // Popups, dialogs, sheets, floating panels from the same PID are excluded.
         // The main window is INCLUDED for layout (placeholder) but not parked.
-        let mainArea = (mainInfo?.frame.width ?? 0) * (mainInfo?.frame.height ?? 0)
         let thumbnailInfos = windows.filter { info in
-            if let mainPID, info.ownerPID == mainPID, info.windowID != effectiveMainID {
-                let area = info.frame.width * info.frame.height
-                if area < mainArea * 0.4 { return false }
-            }
+            // Always include the main window for layout
+            if info.windowID == effectiveMainID { return true }
+            // Exclude same-PID popups/dialogs — they'll be constrained to work area
+            if let mainPID, info.ownerPID == mainPID, info.isPopupOrDialog { return false }
+            // Exclude non-actual windows (non-zero level, unknown tiny, etc.)
+            if !info.isActualWindow { return false }
             return true
         }
 
@@ -507,8 +514,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Constrain same-PID popup/dialog windows into the work area.
-        // Only touch windows that are on a real screen (not the virtual display)
-        // and are not managed as thumbnails.
+        // Uses AX subrole classification: only constrain windows identified as
+        // popups/dialogs, plus any same-PID non-actual windows.
         if let mainPID {
             let vdOriginX = VirtualDisplayManager.shared.origin.x
             let thumbnailIDs = Set(thumbnailInfos.map(\.windowID))
@@ -518,7 +525,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 && !thumbnailIDs.contains(info.windowID)
                 && info.frame.origin.x < vdOriginX - 100 {
                 AccessibilityManager.shared.constrainWindow(
-                    pid: info.ownerPID, cgFrame: info.frame, within: usableArea
+                    windowID: info.windowID, pid: info.ownerPID, cgFrame: info.frame, within: usableArea
                 )
             }
         }
@@ -535,9 +542,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.updateSlots(slotsByScreen[screenIdx] ?? [], allWindows: thumbnailInfos)
         }
 
-        // Capture thumbnails (only parked windows, not the main window in work area)
-        let captureTargets = thumbnailInfos.filter { $0.windowID != effectiveMainID }
-        captureManager.updateCaptures(for: captureTargets) { [weak self] windowID, image in
+        // Capture thumbnails (including the active window so its thumbnail stays fresh)
+        captureManager.updateCaptures(for: thumbnailInfos) { [weak self] windowID, image in
             guard let self else { return }
             if let info = windows.first(where: { $0.windowID == windowID }) {
                 info.latestImage = image

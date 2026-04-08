@@ -4,6 +4,13 @@ import os.log
 
 private let logger = Logger(subsystem: "com.hoveychen.Glance", category: "Accessibility")
 
+// MARK: - Private API: AXUIElement ↔ CGWindowID bridge
+
+/// Returns the CGWindowID for a given AXUIElement window.
+/// This is a private SPI that AltTab and other window managers rely on.
+@_silgen_name("_AXUIElementGetWindow")
+func _AXUIElementGetWindow(_ element: AXUIElement, _ wid: inout CGWindowID) -> AXError
+
 /// Manages window operations via the macOS Accessibility API.
 final class AccessibilityManager {
 
@@ -18,10 +25,87 @@ final class AccessibilityManager {
     /// Cached AXUIElement for the window currently in the work area.
     private var activeWorkAreaElement: (windowID: CGWindowID, element: AXUIElement)?
 
-    private init() {}
+    /// Cache of CGWindowID → AXUIElement, rebuilt per refresh cycle.
+    private var axElementCache: [CGWindowID: AXUIElement] = [:]
+
+    private init() {
+        // Set global AX messaging timeout to 1 second (default is 6s).
+        // Prevents blocking when target apps are unresponsive.
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 1.0)
+    }
 
     var isAccessibilityEnabled: Bool {
         AXIsProcessTrusted()
+    }
+
+    // MARK: - AX ↔ CG Bridge
+
+    /// Get the CGWindowID for an AXUIElement window.
+    func getWindowID(for element: AXUIElement) -> CGWindowID? {
+        var wid: CGWindowID = 0
+        let err = _AXUIElementGetWindow(element, &wid)
+        return err == .success && wid != 0 ? wid : nil
+    }
+
+    /// Build/refresh the CGWindowID → AXUIElement cache for a set of PIDs.
+    /// Call this once per refresh cycle before using `findAXWindowByID`.
+    func rebuildAXCache(for pids: Set<pid_t>) {
+        axElementCache.removeAll(keepingCapacity: true)
+        for pid in pids {
+            let app = AXUIElementCreateApplication(pid)
+            var windowsRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+                  let axWindows = windowsRef as? [AXUIElement] else { continue }
+            for axWin in axWindows {
+                if let wid = getWindowID(for: axWin) {
+                    axElementCache[wid] = axWin
+                }
+            }
+        }
+    }
+
+    /// Find AXUIElement by CGWindowID using the cache. Falls back to enumeration.
+    func findAXWindowByID(_ windowID: CGWindowID, pid: pid_t) -> AXUIElement? {
+        // Check cache first
+        if let cached = axElementCache[windowID] { return cached }
+
+        // Cache miss — enumerate this app's windows
+        let app = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let axWindows = windowsRef as? [AXUIElement] else { return nil }
+        for axWin in axWindows {
+            if let wid = getWindowID(for: axWin) {
+                axElementCache[wid] = axWin
+                if wid == windowID { return axWin }
+            }
+        }
+        return nil
+    }
+
+    // MARK: - AX Attribute Queries
+
+    /// Get the AX role string for a window (e.g. "AXWindow", "AXSheet").
+    func getRole(for element: AXUIElement) -> String? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &ref) == .success else { return nil }
+        return ref as? String
+    }
+
+    /// Get the AX subrole string (e.g. "AXStandardWindow", "AXDialog", "AXFloatingWindow").
+    func getSubrole(for element: AXUIElement) -> String? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &ref) == .success else { return nil }
+        return ref as? String
+    }
+
+    /// Query AX role and subrole for a window identified by CGWindowID.
+    /// Returns (role, subrole), either of which may be nil.
+    func getWindowClassification(windowID: CGWindowID, pid: pid_t) -> (role: String?, subrole: String?) {
+        guard let axWin = findAXWindowByID(windowID, pid: pid) else {
+            return (nil, nil)
+        }
+        return (getRole(for: axWin), getSubrole(for: axWin))
     }
 
     // MARK: - Window Activation
@@ -56,7 +140,7 @@ final class AccessibilityManager {
     /// Returns the frame actually set (CG coords, top-left origin).
     @discardableResult
     func moveToWorkArea(windowID: CGWindowID, pid: pid_t, windowFrame: CGRect, workAreaCG: CGRect) -> Bool {
-        guard let axWin = findAXWindow(pid: pid, cgFrame: windowFrame) else {
+        guard let axWin = findAXWindowByID(windowID, pid: pid) ?? findAXWindow(pid: pid, cgFrame: windowFrame) else {
             logger.warning("moveToWorkArea: could not find AX window for \(windowID)")
             return false
         }
@@ -116,12 +200,17 @@ final class AccessibilityManager {
             axWin = cached.element
         }
 
-        // Fallback: find by frame match (more reliable than focused/first window for multi-window apps)
+        // Prefer ID-based lookup via _AXUIElementGetWindow bridge
+        if axWin == nil {
+            axWin = findAXWindowByID(windowID, pid: pid)
+        }
+
+        // Fallback: find by frame match
         if axWin == nil, let frame = cgFrame {
             axWin = findAXWindow(pid: pid, cgFrame: frame)
         }
 
-        // Fallback: try focused window of the app
+        // Last resort: try focused window of the app
         if axWin == nil {
             let app = AXUIElementCreateApplication(pid)
             var ref: CFTypeRef?
@@ -167,7 +256,7 @@ final class AccessibilityManager {
         let vdm = VirtualDisplayManager.shared
         guard vdm.isActive else { return }
 
-        guard let axWin = findAXWindow(pid: pid, cgFrame: windowFrame) else {
+        guard let axWin = findAXWindowByID(windowID, pid: pid) ?? findAXWindow(pid: pid, cgFrame: windowFrame) else {
             logger.warning("moveToVirtualDisplay: could not find AX window for \(windowID) (\(pid))")
             return
         }
@@ -283,7 +372,7 @@ final class AccessibilityManager {
 
     /// Constrain a window (by CG frame match) to stay within a target rect.
     /// Used for popup/dialog windows that aren't the cached active work area window.
-    func constrainWindow(pid: pid_t, cgFrame: CGRect, within targetCG: CGRect) {
+    func constrainWindow(windowID: CGWindowID, pid: pid_t, cgFrame: CGRect, within targetCG: CGRect) {
         // Only reposition if the window is outside the target area
         let centerX = cgFrame.midX
         let centerY = cgFrame.midY
@@ -292,7 +381,7 @@ final class AccessibilityManager {
             return
         }
 
-        guard let axWin = findAXWindow(pid: pid, cgFrame: cgFrame) else { return }
+        guard let axWin = findAXWindowByID(windowID, pid: pid) ?? findAXWindow(pid: pid, cgFrame: cgFrame) else { return }
 
         var w = min(cgFrame.width, targetCG.width)
         var h = min(cgFrame.height, targetCG.height)
@@ -338,6 +427,7 @@ final class AccessibilityManager {
         originalFrames.removeAll()
         parkedPositions.removeAll()
         activeWorkAreaElement = nil
+        axElementCache.removeAll()
     }
 
     // MARK: - Private
