@@ -337,17 +337,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Must not be the current main, must not be already parked, must be a real new window
             id != effectiveMainID && !parkedWindows.contains(id)
         }), let newInfo = windows.first(where: { $0.windowID == newID }) {
-            // Use AX subrole classification: skip popups, dialogs, sheets, floating panels.
-            // Same-PID non-standard windows (AXDialog, AXSheet, AXFloatingWindow) are
-            // constrained to the work area instead of auto-swapped.
+            // Use AX subrole classification to decide whether to auto-swap.
+            // Same-PID windows are held to a stricter standard: ONLY AXStandardWindow
+            // triggers auto-swap. This prevents Chrome dropdowns, Save dialogs, sheets,
+            // floating panels, and any unclassified popups from stealing the work area.
+            // Different-PID windows use the broader isActualWindow check.
             let shouldSkipAutoSwap: Bool = {
-                // Popups/dialogs from the same app → don't swap
-                if let mainPID = currentMainPID, newInfo.ownerPID == mainPID, newInfo.isPopupOrDialog {
-                    return true
-                }
-                // Non-actual windows (non-zero level, floating, unknown tiny) → don't swap
+                // Non-actual windows → never swap
                 if !newInfo.isActualWindow {
                     return true
+                }
+                // Same-PID: must be explicitly AXStandardWindow to auto-swap.
+                // Dialogs, unknown/nil subrole, and everything else stays in work area.
+                if let mainPID = currentMainPID, newInfo.ownerPID == mainPID {
+                    if newInfo.axSubrole != "AXStandardWindow" {
+                        return true
+                    }
                 }
                 return false
             }()
@@ -405,15 +410,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Thumbnail candidates: actual windows only (based on AX subrole classification).
-        // Popups, dialogs, sheets, floating panels from the same PID are excluded.
+        // Same-PID windows must be AXStandardWindow to get a thumbnail slot.
         // The main window is INCLUDED for layout (placeholder) but not parked.
         let thumbnailInfos = windows.filter { info in
             // Always include the main window for layout
             if info.windowID == effectiveMainID { return true }
-            // Exclude same-PID popups/dialogs — they'll be constrained to work area
-            if let mainPID, info.ownerPID == mainPID, info.isPopupOrDialog { return false }
-            // Exclude non-actual windows (non-zero level, unknown tiny, etc.)
+            // Exclude non-actual windows
             if !info.isActualWindow { return false }
+            // Same-PID: only AXStandardWindow gets a thumbnail (not dialogs, popups, etc.)
+            if let mainPID, info.ownerPID == mainPID, info.axSubrole != "AXStandardWindow" {
+                return false
+            }
             return true
         }
 

@@ -192,7 +192,8 @@ final class WindowTracker {
         for entry in windowList {
             guard let windowID = entry[kCGWindowNumber] as? CGWindowID,
                   let ownerPID = entry[kCGWindowOwnerPID] as? pid_t,
-                  let layer = entry[kCGWindowLayer] as? Int
+                  let layer = entry[kCGWindowLayer] as? Int,
+                  layer == 0  // Normal windows only (menus, tooltips, popups have layer > 0)
             else { continue }
 
             // Skip our own windows
