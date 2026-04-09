@@ -44,6 +44,12 @@ final class VirtualDisplayManager {
 
         logger.warning("Creating virtual display...")
 
+        // Snapshot existing screen IDs before creating the virtual display,
+        // so we can diff afterwards to find the newly added one.
+        let screenIDsBefore = Set(NSScreen.screens.compactMap {
+            $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+        })
+
         // 1. Create descriptor
         let descObj = descClass.alloc().perform(NSSelectorFromString("init"))!
             .takeUnretainedValue()
@@ -99,13 +105,26 @@ final class VirtualDisplayManager {
         logger.warning("Virtual display created, displayID=\(self.displayID)")
 
         // Poll for the virtual display to appear in NSScreen.screens (up to 5 seconds).
-        // The system needs time to register the new display.
+        // Find it by diffing screen IDs before vs after — the new one is ours.
         var found = false
         for attempt in 1...10 {
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
-            refreshScreenCoordinates()
-            if origin != .zero {
-                logger.warning("Virtual display detected after \(attempt * 500)ms")
+
+            let currentScreens = NSScreen.screens
+            let newScreen = currentScreens.first { screen in
+                guard let screenID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else { return false }
+                return !screenIDsBefore.contains(screenID)
+            }
+            if let newScreen {
+                let newID = (newScreen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) ?? 0
+                if displayID == 0 {
+                    displayID = newID
+                }
+                let vf = newScreen.frame
+                let primaryH = NSScreen.screens.first?.frame.height ?? 0
+                origin = CGPoint(x: vf.origin.x, y: primaryH - vf.origin.y - vf.height)
+                size = vf.size
+                logger.warning("Virtual display detected after \(attempt * 500)ms, displayID=\(self.displayID), origin=(\(self.origin.x), \(self.origin.y)), size=\(self.size.width)x\(self.size.height)")
                 found = true
                 break
             }
@@ -147,31 +166,12 @@ final class VirtualDisplayManager {
         logger.warning("Virtual screen at AX origin=(\(self.origin.x), \(self.origin.y)) size=\(self.size.width)x\(self.size.height)")
     }
 
-    /// Find the NSScreen corresponding to the virtual display.
-    /// Tries displayID first (most reliable), then falls back to name matching.
+    /// Find the NSScreen corresponding to the virtual display by its displayID.
     func findVirtualScreen() -> NSScreen? {
-        // Method 1: Match by CGDirectDisplayID (most reliable)
-        if displayID != 0 {
-            if let screen = NSScreen.screens.first(where: {
-                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == displayID
-            }) {
-                return screen
-            }
-        }
-        // Method 2: Match by localizedName
-        if let screen = NSScreen.screens.first(where: { $0.localizedName == "Glance" }) {
-            return screen
-        }
-        // Method 3: Find a screen with exactly our configured resolution that isn't the primary
-        if let screen = NSScreen.screens.dropFirst().first(where: {
-            let w = $0.frame.width
-            let h = $0.frame.height
-            // We created 3840×2160, but NSScreen reports in points (may be halved for HiDPI)
-            return (w == 3840 && h == 2160) || (w == 1920 && h == 1080)
-        }) {
-            return screen
-        }
-        return nil
+        guard displayID != 0 else { return nil }
+        return NSScreen.screens.first(where: {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == displayID
+        })
     }
 
     /// Whether a given NSScreen is the virtual display.
