@@ -21,6 +21,17 @@ jobs:
       - name: Generate Xcode Project
         run: xcodegen generate
 
+      - name: Extract version from tag
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="0.0.0-dev"
+          fi
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
       - name: Import signing certificates
         if: env.BUILD_CERTIFICATE_BASE64 != ''
         env:
@@ -64,6 +75,7 @@ jobs:
             CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
             ARCHS="arm64 x86_64" \
             ONLY_ACTIVE_ARCH=NO \
+            MARKETING_VERSION="${{ steps.version.outputs.value }}" \
             build
 
       - name: Build (ad-hoc, no certificate)
@@ -80,6 +92,7 @@ jobs:
             DEVELOPMENT_TEAM="" \
             ARCHS="arm64 x86_64" \
             ONLY_ACTIVE_ARCH=NO \
+            MARKETING_VERSION="${{ steps.version.outputs.value }}" \
             build
 
       - name: Package PKG

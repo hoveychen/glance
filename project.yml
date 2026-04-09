@@ -25,6 +25,8 @@ targets:
         INFOPLIST_FILE: Glance/App/Info.plist
         CODE_SIGN_ENTITLEMENTS: Glance/App/Glance.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: com.hoveychen.Glance
+        MARKETING_VERSION: "0.0.0-dev"
+        CURRENT_PROJECT_VERSION: "1"
         ENABLE_APP_SANDBOX: NO
         ENABLE_HARDENED_RUNTIME: YES
         LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"

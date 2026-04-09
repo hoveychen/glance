@@ -58,12 +58,14 @@ final class VirtualDisplayManager {
         descObj.perform(NSSelectorFromString("setDispatchQueue:"), with: queue)
         descObj.perform(NSSelectorFromString("setName:"), with: "Glance" as NSString)
 
-        // Use NSNumber for UInt32 setters via perform
-        descObj.perform(NSSelectorFromString("setMaxPixelsWide:"), with: NSNumber(value: 3840))
-        descObj.perform(NSSelectorFromString("setMaxPixelsHigh:"), with: NSNumber(value: 2160))
-        descObj.perform(NSSelectorFromString("setProductID:"), with: NSNumber(value: 0xFACE))
-        descObj.perform(NSSelectorFromString("setVendorID:"), with: NSNumber(value: 0xBEEF))
-        descObj.perform(NSSelectorFromString("setSerialNum:"), with: NSNumber(value: 1))
+        // UInt32 setters must use IMP-based dispatch — perform(_:with:) passes
+        // the NSNumber *pointer* which the callee interprets as an integer, giving
+        // garbage values that can prevent the display from going online.
+        setUInt32Property(on: descObj, selector: "setMaxPixelsWide:", value: 3840)
+        setUInt32Property(on: descObj, selector: "setMaxPixelsHigh:", value: 2160)
+        setUInt32Property(on: descObj, selector: "setProductID:", value: 0xFACE)
+        setUInt32Property(on: descObj, selector: "setVendorID:", value: 0xBEEF)
+        setUInt32Property(on: descObj, selector: "setSerialNum:", value: 1)
 
         // setSizeInMillimeters: takes a CGSize struct — use NSInvocation
         setSizeInMillimeters(on: descObj, size: CGSize(width: 600, height: 340))
@@ -84,7 +86,7 @@ final class VirtualDisplayManager {
         let settingsObj = settingsClass.alloc().perform(NSSelectorFromString("init"))!
             .takeUnretainedValue()
         settingsObj.perform(NSSelectorFromString("setModes:"), with: [modeObj] as NSArray)
-        settingsObj.perform(NSSelectorFromString("setHiDPI:"), with: NSNumber(value: 0))
+        setUInt32Property(on: settingsObj, selector: "setHiDPI:", value: 0)
         logger.warning("Settings configured")
 
         // 4. Create virtual display
@@ -103,6 +105,8 @@ final class VirtualDisplayManager {
         // Extract the CGDirectDisplayID via IMP casting (the property returns UInt32)
         displayID = getDisplayID(from: vdObj)
         logger.warning("Virtual display created, displayID=\(self.displayID)")
+        logger.warning("CGDisplayIsOnline=\(CGDisplayIsOnline(self.displayID)), CGDisplayIsActive=\(CGDisplayIsActive(self.displayID))")
+        logger.warning("screenIDsBefore=\(screenIDsBefore.sorted(), privacy: .public)")
 
         // Poll for the virtual display to appear in NSScreen.screens (up to 5 seconds).
         // Find it by diffing screen IDs before vs after — the new one is ours.
@@ -111,6 +115,11 @@ final class VirtualDisplayManager {
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
 
             let currentScreens = NSScreen.screens
+            let screenIDs = currentScreens.compactMap {
+                $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+            }
+            logger.warning("Poll #\(attempt): screenIDs=\(screenIDs, privacy: .public), looking for ID not in \(screenIDsBefore.sorted(), privacy: .public)")
+
             let newScreen = currentScreens.first { screen in
                 guard let screenID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else { return false }
                 return !screenIDsBefore.contains(screenID)
@@ -130,7 +139,7 @@ final class VirtualDisplayManager {
             }
         }
         if !found {
-            logger.error("Virtual display not detected in NSScreen.screens after 5s. Screens: \(NSScreen.screens.map { "\($0.localizedName) id=\(($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) ?? 0) frame=\($0.frame)" }.joined(separator: ", "))")
+            logger.error("Virtual display not detected in NSScreen.screens after 5s. Screens: \(NSScreen.screens.map { "\($0.localizedName) id=\(($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) ?? 0) frame=\($0.frame)" }.joined(separator: ", "), privacy: .public)")
             destroy()
             return false
         }
@@ -220,6 +229,15 @@ final class VirtualDisplayManager {
         typealias Fn = @convention(c) (AnyObject, Selector) -> UInt32
         let fn = unsafeBitCast(imp, to: Fn.self)
         return fn(vdObj, sel)
+    }
+
+    private func setUInt32Property(on obj: AnyObject, selector: String, value: UInt32) {
+        let sel = NSSelectorFromString(selector)
+        guard let method = class_getInstanceMethod(type(of: obj), sel) else { return }
+        let imp = method_getImplementation(method)
+        typealias Fn = @convention(c) (AnyObject, Selector, UInt32) -> Void
+        let fn = unsafeBitCast(imp, to: Fn.self)
+        fn(obj, sel, value)
     }
 
     private func setSizeInMillimeters(on obj: AnyObject, size: CGSize) {
