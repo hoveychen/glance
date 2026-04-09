@@ -105,41 +105,43 @@ final class VirtualDisplayManager {
         // Extract the CGDirectDisplayID via IMP casting (the property returns UInt32)
         displayID = getDisplayID(from: vdObj)
         logger.warning("Virtual display created, displayID=\(self.displayID)")
-        logger.warning("CGDisplayIsOnline=\(CGDisplayIsOnline(self.displayID)), CGDisplayIsActive=\(CGDisplayIsActive(self.displayID))")
-        logger.warning("screenIDsBefore=\(screenIDsBefore.sorted(), privacy: .public)")
 
-        // Poll for the virtual display to appear in NSScreen.screens (up to 5 seconds).
-        // Find it by diffing screen IDs before vs after — the new one is ours.
+        // Wait briefly for the display to be registered by the window server,
+        // then read coordinates directly from CoreGraphics (NSScreen.screens may
+        // not refresh within the app's RunLoop context).
         var found = false
         for attempt in 1...10 {
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
 
-            let currentScreens = NSScreen.screens
-            let screenIDs = currentScreens.compactMap {
-                $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
-            }
-            logger.warning("Poll #\(attempt): screenIDs=\(screenIDs, privacy: .public), looking for ID not in \(screenIDsBefore.sorted(), privacy: .public)")
-
-            let newScreen = currentScreens.first { screen in
+            // Try NSScreen first (most accurate for point-based coordinates).
+            if let newScreen = NSScreen.screens.first(where: { screen in
                 guard let screenID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else { return false }
                 return !screenIDsBefore.contains(screenID)
-            }
-            if let newScreen {
-                let newID = (newScreen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) ?? 0
-                if displayID == 0 {
-                    displayID = newID
-                }
+            }) {
                 let vf = newScreen.frame
                 let primaryH = NSScreen.screens.first?.frame.height ?? 0
                 origin = CGPoint(x: vf.origin.x, y: primaryH - vf.origin.y - vf.height)
                 size = vf.size
-                logger.warning("Virtual display detected after \(attempt * 500)ms, displayID=\(self.displayID), origin=(\(self.origin.x), \(self.origin.y)), size=\(self.size.width)x\(self.size.height)")
+                logger.warning("Virtual display detected via NSScreen after \(attempt * 500)ms, displayID=\(self.displayID), origin=(\(self.origin.x), \(self.origin.y)), size=\(self.size.width)x\(self.size.height)")
                 found = true
                 break
             }
+
+            // Fallback: check CoreGraphics directly — the display may be active
+            // at the CG level even when NSScreen hasn't refreshed yet.
+            if CGDisplayIsActive(displayID) != 0 {
+                let bounds = CGDisplayBounds(displayID)
+                if bounds.width > 0 && bounds.height > 0 {
+                    origin = bounds.origin
+                    size = bounds.size
+                    logger.warning("Virtual display detected via CGDisplayBounds after \(attempt * 500)ms, displayID=\(self.displayID), origin=(\(self.origin.x), \(self.origin.y)), size=\(self.size.width)x\(self.size.height)")
+                    found = true
+                    break
+                }
+            }
         }
         if !found {
-            logger.error("Virtual display not detected in NSScreen.screens after 5s. Screens: \(NSScreen.screens.map { "\($0.localizedName) id=\(($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) ?? 0) frame=\($0.frame)" }.joined(separator: ", "), privacy: .public)")
+            logger.error("Virtual display not detected after 5s (CG online=\(CGDisplayIsOnline(self.displayID)), active=\(CGDisplayIsActive(self.displayID)))")
             destroy()
             return false
         }
@@ -156,23 +158,25 @@ final class VirtualDisplayManager {
         logger.warning("Virtual display destroyed")
     }
 
-    /// Refresh the virtual screen coordinates from NSScreen.
-    /// Uses CGDirectDisplayID for reliable matching, falls back to name.
+    /// Refresh the virtual screen coordinates.
+    /// Tries NSScreen first, falls back to CGDisplayBounds.
     func refreshScreenCoordinates() {
-        guard isActive else { return }
+        guard isActive, displayID != 0 else { return }
 
-        let vScreen: NSScreen? = findVirtualScreen()
-        guard let vScreen else {
-            logger.warning("Virtual display not found in NSScreen.screens (displayID=\(self.displayID))")
-            return
+        if let vScreen = findVirtualScreen() {
+            let vf = vScreen.frame
+            let primaryH = NSScreen.screens.first?.frame.height ?? 0
+            origin = CGPoint(x: vf.origin.x, y: primaryH - vf.origin.y - vf.height)
+            size = vf.size
+        } else {
+            // NSScreen doesn't include the virtual display — use CG directly.
+            let bounds = CGDisplayBounds(displayID)
+            if bounds.width > 0 {
+                origin = bounds.origin
+                size = bounds.size
+            }
         }
-
-        let vf = vScreen.frame
-        // Primary screen height for AppKit→CG coordinate conversion
-        let primaryH = NSScreen.screens.first?.frame.height ?? 0
-        origin = CGPoint(x: vf.origin.x, y: primaryH - vf.origin.y - vf.height)
-        size = vf.size
-        logger.warning("Virtual screen at AX origin=(\(self.origin.x), \(self.origin.y)) size=\(self.size.width)x\(self.size.height)")
+        logger.warning("Virtual screen at origin=(\(self.origin.x), \(self.origin.y)) size=\(self.size.width)x\(self.size.height)")
     }
 
     /// Find the NSScreen corresponding to the virtual display by its displayID.
