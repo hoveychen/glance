@@ -5,7 +5,7 @@ SCHEME="Glance"
 CONFIG="Release"
 BUILD_DIR="build"
 APP_NAME="Glance"
-DMG_NAME="Glance.dmg"
+PKG_NAME="Glance.pkg"
 
 echo "==> Generating Xcode project..."
 xcodegen generate
@@ -28,23 +28,17 @@ if [ ! -d "$APP_PATH" ]; then
   exit 1
 fi
 
-echo "==> Packaging DMG..."
-rm -rf dmg_contents "${DMG_NAME}"
-mkdir -p dmg_contents
-cp -R "$APP_PATH" dmg_contents/
-ln -s /Applications dmg_contents/Applications
+echo "==> Packaging PKG..."
+rm -f "${PKG_NAME}"
 
-hdiutil create -volname "${APP_NAME}" \
-  -srcfolder dmg_contents \
-  -ov -format UDZO \
-  "${DMG_NAME}" \
-  -quiet
-
-rm -rf dmg_contents
+pkgbuild \
+  --component "$APP_PATH" \
+  --install-location /Applications \
+  "${PKG_NAME}"
 
 echo "==> Done!"
 echo "    App: ${APP_PATH}"
-echo "    DMG: ${DMG_NAME}"
+echo "    PKG: ${PKG_NAME}"
 echo ""
 echo "To run directly:"
 echo "    open ${APP_PATH}"

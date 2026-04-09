@@ -21,10 +21,11 @@ jobs:
       - name: Generate Xcode Project
         run: xcodegen generate
 
-      - name: Import signing certificate
+      - name: Import signing certificates
         if: env.BUILD_CERTIFICATE_BASE64 != ''
         env:
           BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          INSTALLER_CERTIFICATE_BASE64: ${{ secrets.INSTALLER_CERTIFICATE_BASE64 }}
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
@@ -34,10 +35,16 @@ jobs:
           security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
 
-          # Import certificate
-          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
-          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o $CERTIFICATE_PATH
-          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          # Import Developer ID Application certificate
+          APP_CERT_PATH=$RUNNER_TEMP/app_certificate.p12
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o $APP_CERT_PATH
+          security import $APP_CERT_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+
+          # Import Developer ID Installer certificate
+          INSTALLER_CERT_PATH=$RUNNER_TEMP/installer_certificate.p12
+          echo -n "$INSTALLER_CERTIFICATE_BASE64" | base64 --decode -o $INSTALLER_CERT_PATH
+          security import $INSTALLER_CERT_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
           security list-keychain -d user -s $KEYCHAIN_PATH
 
@@ -73,54 +80,60 @@ jobs:
             ONLY_ACTIVE_ARCH=NO \
             build
 
-      - name: Notarize
-        if: env.NOTARIZE_APPLE_ID != ''
+      - name: Package PKG
         env:
-          NOTARIZE_APPLE_ID: ${{ secrets.NOTARIZE_APPLE_ID }}
-          NOTARIZE_PASSWORD: ${{ secrets.NOTARIZE_PASSWORD }}
-          NOTARIZE_TEAM_ID: ${{ secrets.DEVELOPMENT_TEAM }}
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
         run: |
           APP_PATH="build/Build/Products/Release/Glance.app"
-          ZIP_PATH="$RUNNER_TEMP/Glance-notarize.zip"
 
-          # Create zip for notarization
-          ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+          # Build unsigned pkg
+          pkgbuild \
+            --component "$APP_PATH" \
+            --install-location /Applications \
+            "$RUNNER_TEMP/Glance-unsigned.pkg"
+
+          if [ -n "$BUILD_CERTIFICATE_BASE64" ]; then
+            # Sign pkg with Developer ID Installer certificate
+            productsign \
+              --sign "Developer ID Installer: ${{ secrets.INSTALLER_IDENTITY }}" \
+              "$RUNNER_TEMP/Glance-unsigned.pkg" \
+              Glance.pkg
+          else
+            cp "$RUNNER_TEMP/Glance-unsigned.pkg" Glance.pkg
+          fi
+
+      - name: Notarize PKG
+        if: env.NOTARY_API_KEY_ID != ''
+        env:
+          NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_API_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
+          NOTARY_API_KEY_BASE64: ${{ secrets.NOTARY_API_KEY_BASE64 }}
+        run: |
+          # Write API key .p8 file
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${NOTARY_API_KEY_ID}.p8"
+          echo -n "$NOTARY_API_KEY_BASE64" | base64 --decode -o "$API_KEY_PATH"
 
           # Submit for notarization
-          xcrun notarytool submit "$ZIP_PATH" \
-            --apple-id "$NOTARIZE_APPLE_ID" \
-            --password "$NOTARIZE_PASSWORD" \
-            --team-id "$NOTARIZE_TEAM_ID" \
+          xcrun notarytool submit Glance.pkg \
+            --key "$API_KEY_PATH" \
+            --key-id "$NOTARY_API_KEY_ID" \
+            --issuer "$NOTARY_API_ISSUER_ID" \
             --wait
 
           # Staple the ticket
-          xcrun stapler staple "$APP_PATH"
-
-      - name: Package DMG
-        run: |
-          APP_PATH="build/Build/Products/Release/Glance.app"
-          DMG_PATH="Glance.dmg"
-
-          mkdir -p dmg_contents
-          cp -R "$APP_PATH" dmg_contents/
-          ln -s /Applications dmg_contents/Applications
-
-          hdiutil create -volname "Glance" \
-            -srcfolder dmg_contents \
-            -ov -format UDZO \
-            "$DMG_PATH"
+          xcrun stapler staple Glance.pkg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: Glance
-          path: Glance.dmg
+          path: Glance.pkg
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: Glance.dmg
+          files: Glance.pkg
           generate_release_notes: true
 
       - name: Cleanup keychain

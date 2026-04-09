@@ -16,5 +16,6 @@ test_*
 # Build artifacts
 *.app
 *.dmg
+*.pkg
 *.zip
 build_check/
