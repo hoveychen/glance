@@ -15,10 +15,17 @@ final class ThumbnailWindow: NSWindow {
     var onHoverEnd: ((CGWindowID) -> Void)?
     /// Fires when an external file/text drag hovers long enough to trigger spring-loading.
     var onDragSpringLoad: ((CGWindowID) -> Void)?
+    /// Fires when the pin button on the thumbnail is clicked.
+    var onPinClicked: ((WindowInfo) -> Void)?
 
     var isActiveWindow: Bool {
         get { thumbnailView.isActiveWindow }
         set { thumbnailView.isActiveWindow = newValue }
+    }
+
+    var isPinnedReference: Bool {
+        get { thumbnailView.isPinnedReference }
+        set { thumbnailView.isPinnedReference = newValue }
     }
 
     private let thumbnailView: ThumbnailView
@@ -59,6 +66,10 @@ final class ThumbnailWindow: NSWindow {
         thumbnailView.onSpringLoadActivated = { [weak self] in
             guard let self else { return }
             self.onDragSpringLoad?(self.windowID)
+        }
+        thumbnailView.onPinClicked = { [weak self] in
+            guard let self, let info = self.thumbnailView.windowInfo else { return }
+            self.onPinClicked?(info)
         }
     }
 
@@ -130,6 +141,10 @@ final class ThumbnailWindow: NSWindow {
 
     func hideHint() {
         thumbnailView.hideHint()
+    }
+
+    func showHintPinIcon() {
+        thumbnailView.showHintPinIcon()
     }
 
     func animateTo(frame newFrame: CGRect, duration: TimeInterval = 0.3) {

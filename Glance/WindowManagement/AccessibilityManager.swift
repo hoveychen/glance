@@ -25,6 +25,9 @@ final class AccessibilityManager {
     /// Cached AXUIElement for the window currently in the work area.
     private var activeWorkAreaElement: (windowID: CGWindowID, element: AXUIElement)?
 
+    /// Cached AXUIElement for the pinned reference window in the work area.
+    private var activeReferenceElement: (windowID: CGWindowID, element: AXUIElement)?
+
     /// Cache of CGWindowID → AXUIElement, rebuilt per refresh cycle.
     private var axElementCache: [CGWindowID: AXUIElement] = [:]
 
@@ -158,27 +161,47 @@ final class AccessibilityManager {
 
     // MARK: - Window Activation
 
-    func activateWindow(pid: pid_t, windowTitle: String?) {
-        let app = AXUIElementCreateApplication(pid)
+    func activateWindow(pid: pid_t, windowID: CGWindowID? = nil, windowTitle: String?) {
+        // Glance must be the active app first to have activation authority.
+        // Without this, activate() silently fails when called from a global
+        // event monitor / CGEvent tap (no prior mouse interaction with Glance).
+        NSApp.activate(ignoringOtherApps: true)
 
         if let runningApp = NSRunningApplication(processIdentifier: pid) {
             runningApp.activate(options: [.activateIgnoringOtherApps])
         }
 
-        guard let windowTitle, !windowTitle.isEmpty else { return }
-
-        var windowsRef: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef)
-        guard result == .success, let windows = windowsRef as? [AXUIElement] else { return }
-
-        for window in windows {
-            var titleRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
-            if let title = titleRef as? String, title == windowTitle {
-                AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, true as CFTypeRef)
-                AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-                break
+        // Prefer ID-based lookup (exact match) over title-based (ambiguous for
+        // same-app windows like multiple VS Code editors).
+        var targetWindow: AXUIElement?
+        if let windowID {
+            if let cached = activeWorkAreaElement, cached.windowID == windowID {
+                targetWindow = cached.element
+            } else {
+                targetWindow = findAXWindowByID(windowID, pid: pid)
             }
+        }
+
+        // Fallback: title match
+        if targetWindow == nil, let windowTitle, !windowTitle.isEmpty {
+            let app = AXUIElementCreateApplication(pid)
+            var windowsRef: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef)
+            if result == .success, let windows = windowsRef as? [AXUIElement] {
+                for window in windows {
+                    var titleRef: CFTypeRef?
+                    AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
+                    if let title = titleRef as? String, title == windowTitle {
+                        targetWindow = window
+                        break
+                    }
+                }
+            }
+        }
+
+        if let targetWindow {
+            AXUIElementSetAttributeValue(targetWindow, kAXMainAttribute as CFString, true as CFTypeRef)
+            AXUIElementPerformAction(targetWindow, kAXRaiseAction as CFString)
         }
     }
 
@@ -473,6 +496,98 @@ final class AccessibilityManager {
         }
     }
 
+    // MARK: - Reference Panel Operations
+
+    /// Move a parked window into the reference panel of the work area.
+    @discardableResult
+    func moveFromVirtualDisplayToReferencePanel(windowID: CGWindowID, pid: pid_t, referencePanelCG: CGRect) -> Bool {
+        guard let axWin = findParkedAXWindow(windowID: windowID, pid: pid) else {
+            logger.warning("moveToRefPanel: could not find parked AX window for \(windowID)")
+            return false
+        }
+
+        // Fill the entire reference panel
+        var position = CGPoint(x: referencePanelCG.origin.x, y: referencePanelCG.origin.y)
+        var size = CGSize(width: referencePanelCG.width, height: referencePanelCG.height)
+
+        if let posValue = AXValueCreate(.cgPoint, &position) {
+            AXUIElementSetAttributeValue(axWin, kAXPositionAttribute as CFString, posValue)
+        }
+        if let sizeValue = AXValueCreate(.cgSize, &size) {
+            AXUIElementSetAttributeValue(axWin, kAXSizeAttribute as CFString, sizeValue)
+        }
+
+        parkedPositions.removeValue(forKey: windowID)
+        activeReferenceElement = (windowID: windowID, element: axWin)
+        return true
+    }
+
+    /// Park the pinned reference window back to the virtual display.
+    @discardableResult
+    func parkReferenceWindow(windowID: CGWindowID, pid: pid_t) -> Bool {
+        let vdm = VirtualDisplayManager.shared
+        guard vdm.isActive else { return false }
+
+        var axWin: AXUIElement?
+        if let cached = activeReferenceElement, cached.windowID == windowID {
+            axWin = cached.element
+        }
+        if axWin == nil {
+            axWin = findAXWindowByID(windowID, pid: pid)
+        }
+        guard let window = axWin else {
+            logger.warning("parkReferenceWindow: could not find AX window for \(windowID)")
+            return false
+        }
+
+        if originalFrames[windowID] == nil, let frame = getWindowFrameAppKit(window) {
+            originalFrames[windowID] = frame
+        }
+
+        let target = vdm.parkingPosition(for: windowID)
+        var position = target
+        guard let posValue = AXValueCreate(.cgPoint, &position) else { return false }
+        let result = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, posValue)
+        if result != .success {
+            logger.warning("parkReferenceWindow: AX set position failed for \(windowID)")
+            return false
+        }
+
+        parkedPositions[windowID] = target
+        activeReferenceElement = nil
+        return true
+    }
+
+    /// Set the reference window's frame directly (CG coords: top-left origin).
+    func setReferenceFrame(windowID: CGWindowID, pid: pid_t, cgFrame: CGRect) {
+        var axWin: AXUIElement?
+        if let cached = activeReferenceElement, cached.windowID == windowID {
+            axWin = cached.element
+        }
+        if axWin == nil {
+            axWin = findAXWindowByID(windowID, pid: pid)
+        }
+        guard let window = axWin else { return }
+
+        var position = CGPoint(x: cgFrame.origin.x, y: cgFrame.origin.y)
+        var size = CGSize(width: cgFrame.width, height: cgFrame.height)
+        if let sizeValue = AXValueCreate(.cgSize, &size) {
+            AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, sizeValue)
+        }
+        if let posValue = AXValueCreate(.cgPoint, &position) {
+            AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, posValue)
+        }
+    }
+
+    /// Clear reference window state.
+    func clearReference(_ windowID: CGWindowID) {
+        originalFrames.removeValue(forKey: windowID)
+        parkedPositions.removeValue(forKey: windowID)
+        if activeReferenceElement?.windowID == windowID {
+            activeReferenceElement = nil
+        }
+    }
+
     /// Clear saved state for a single window.
     func clearWindow(_ windowID: CGWindowID) {
         originalFrames.removeValue(forKey: windowID)
@@ -487,6 +602,7 @@ final class AccessibilityManager {
         originalFrames.removeAll()
         parkedPositions.removeAll()
         activeWorkAreaElement = nil
+        activeReferenceElement = nil
         axElementCache.removeAll()
     }
 

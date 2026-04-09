@@ -11,17 +11,26 @@ final class ThumbnailView: NSView {
         didSet { updateActiveOverlay() }
     }
 
+    var isPinnedReference: Bool = false {
+        didSet { updatePinnedOverlay() }
+    }
+
     var onHoverStart: (() -> Void)?
     var onHoverEnd: (() -> Void)?
     /// Fires when a file/text drag hovers long enough to trigger spring-loading.
     var onSpringLoadActivated: (() -> Void)?
+    /// Fires when the pin button is clicked.
+    var onPinClicked: (() -> Void)?
 
     private let imageLayer = CALayer()
     private let iconLayer = CALayer()
     private let labelLayer = CATextLayer()
     private let activeOverlay = CALayer()
     private let activeLabel = CATextLayer()
+    private let pinnedOverlay = CALayer()
+    private let pinnedLabel = CATextLayer()
     private let hintLayer = CATextLayer()
+    private var pinButton: NSButton!
     private var trackingArea: NSTrackingArea?
     private var isMouseInside = false
     private var springLoadTimer: Timer?
@@ -95,6 +104,36 @@ final class ThumbnailView: NSView {
         activeLabel.isHidden = true
         layer?.addSublayer(activeLabel)
 
+        // Pinned overlay
+        pinnedOverlay.backgroundColor = NSColor(calibratedRed: 0.1, green: 0.15, blue: 0.3, alpha: 0.5).cgColor
+        pinnedOverlay.cornerRadius = 8
+        pinnedOverlay.isHidden = true
+        layer?.addSublayer(pinnedOverlay)
+
+        pinnedLabel.string = "📌 Pinned"
+        pinnedLabel.fontSize = 11
+        pinnedLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        pinnedLabel.foregroundColor = NSColor.white.cgColor
+        pinnedLabel.backgroundColor = NSColor.clear.cgColor
+        pinnedLabel.alignmentMode = .center
+        pinnedLabel.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        pinnedLabel.isHidden = true
+        layer?.addSublayer(pinnedLabel)
+
+        // Pin button (shown on hover, hidden for active window)
+        pinButton = NSButton(title: "", target: self, action: #selector(pinButtonClicked))
+        pinButton.image = NSImage(systemSymbolName: "pin", accessibilityDescription: "Pin as Reference")
+        pinButton.bezelStyle = .regularSquare
+        pinButton.isBordered = false
+        pinButton.imagePosition = .imageOnly
+        pinButton.contentTintColor = .white
+        pinButton.wantsLayer = true
+        pinButton.layer?.cornerRadius = 4
+        pinButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.15).cgColor
+        pinButton.alphaValue = 0
+        pinButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(pinButton)
+
         // Hint badge
         hintLayer.fontSize = 28
         hintLayer.font = NSFont.monospacedSystemFont(ofSize: 28, weight: .bold)
@@ -105,6 +144,10 @@ final class ThumbnailView: NSView {
         hintLayer.cornerRadius = 6
         hintLayer.isHidden = true
         layer?.addSublayer(hintLayer)
+    }
+
+    @objc private func pinButtonClicked() {
+        onPinClicked?()
     }
 
     override func layout() {
@@ -124,11 +167,21 @@ final class ThumbnailView: NSView {
         let labelY = bounds.height - hH + (hH - labelH) / 2
 
         iconLayer.frame = CGRect(x: 0, y: iconY, width: iconSize, height: iconSize)
-        labelLayer.frame = CGRect(x: iconSize + gap, y: labelY, width: bounds.width - iconSize - gap, height: labelH)
 
-        // Active overlay covers image area
+        // Pin button at the right end of the header
+        let pinSize: CGFloat = 22
+        let pinX = bounds.width - pinSize - 2
+        let pinY = bounds.height - hH + (hH - pinSize) / 2
+        pinButton.frame = CGRect(x: pinX, y: pinY, width: pinSize, height: pinSize)
+
+        let labelW = bounds.width - iconSize - gap - pinSize - 6
+        labelLayer.frame = CGRect(x: iconSize + gap, y: labelY, width: labelW, height: labelH)
+
+        // Active / Pinned overlay covers image area
         activeOverlay.frame = imageRect
         activeLabel.frame = CGRect(x: 0, y: (imageRect.height - 16) / 2, width: imageRect.width, height: 16)
+        pinnedOverlay.frame = imageRect
+        pinnedLabel.frame = CGRect(x: 0, y: (imageRect.height - 16) / 2, width: imageRect.width, height: 16)
 
         // Hint badge centered on image
         let hintSize: CGFloat = 40
@@ -142,6 +195,7 @@ final class ThumbnailView: NSView {
         labelLayer.contentsScale = scale
         imageLayer.contentsScale = scale
         activeLabel.contentsScale = scale
+        pinnedLabel.contentsScale = scale
         hintLayer.contentsScale = scale
         iconLayer.contentsScale = scale
 
@@ -164,12 +218,19 @@ final class ThumbnailView: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         isMouseInside = true
-        if !isActiveWindow {
+        if !isActiveWindow && !isPinnedReference {
             CATransaction.begin()
             CATransaction.setAnimationDuration(0.15)
             imageLayer.borderColor = NSColor.systemBlue.cgColor
             imageLayer.borderWidth = 3
             CATransaction.commit()
+        }
+        // Show pin button on hover (not for active window)
+        if !isActiveWindow {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.15
+                pinButton.animator().alphaValue = 1
+            }
         }
         onHoverStart?()
     }
@@ -181,10 +242,17 @@ final class ThumbnailView: NSView {
         if isActiveWindow {
             imageLayer.borderColor = NSColor.systemGreen.withAlphaComponent(0.6).cgColor
             imageLayer.borderWidth = 2
+        } else if isPinnedReference {
+            imageLayer.borderColor = NSColor.systemBlue.withAlphaComponent(0.6).cgColor
+            imageLayer.borderWidth = 2
         } else {
             imageLayer.borderWidth = 0
         }
         CATransaction.commit()
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            pinButton.animator().alphaValue = 0
+        }
         onHoverEnd?()
     }
 
@@ -214,6 +282,23 @@ final class ThumbnailView: NSView {
         hintLayer.isHidden = true
     }
 
+    /// Update the hint badge to indicate pin mode (prepend pin icon).
+    func showHintPinIcon() {
+        guard !hintLayer.isHidden, let current = hintLayer.string as? String else { return }
+        // Avoid double-prepending
+        if !current.hasPrefix("📌") {
+            hintLayer.string = "📌\(current)"
+            // Widen the badge to fit the pin icon
+            let wider = hintLayer.frame.width + 34
+            hintLayer.frame = CGRect(
+                x: (bounds.width - wider) / 2,
+                y: hintLayer.frame.origin.y,
+                width: wider,
+                height: hintLayer.frame.height
+            )
+        }
+    }
+
     private func updateActiveOverlay() {
         CATransaction.begin()
         CATransaction.setAnimationDuration(0.2)
@@ -222,7 +307,21 @@ final class ThumbnailView: NSView {
         if isActiveWindow {
             imageLayer.borderColor = NSColor.systemGreen.withAlphaComponent(0.6).cgColor
             imageLayer.borderWidth = 2
-        } else if !isMouseInside {
+        } else if !isPinnedReference && !isMouseInside {
+            imageLayer.borderWidth = 0
+        }
+        CATransaction.commit()
+    }
+
+    private func updatePinnedOverlay() {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.2)
+        pinnedOverlay.isHidden = !isPinnedReference
+        pinnedLabel.isHidden = !isPinnedReference
+        if isPinnedReference {
+            imageLayer.borderColor = NSColor.systemBlue.withAlphaComponent(0.6).cgColor
+            imageLayer.borderWidth = 2
+        } else if !isActiveWindow && !isMouseInside {
             imageLayer.borderWidth = 0
         }
         CATransaction.commit()

@@ -11,6 +11,8 @@ final class OverlayWindowController {
     var onThumbnailHoverEnd: ((CGWindowID) -> Void)?
     /// External file/text drag hovered long enough to trigger spring-loading.
     var onThumbnailDragSpringLoad: ((CGWindowID) -> Void)?
+    /// Pin button clicked on a thumbnail.
+    var onThumbnailPinClicked: ((WindowInfo) -> Void)?
 
     /// Window being dragged — skip animating it during layout updates.
     var draggingWindowID: CGWindowID?
@@ -20,6 +22,15 @@ final class OverlayWindowController {
         didSet {
             for (id, window) in thumbnailWindows {
                 window.isActiveWindow = (id == activeWindowID)
+            }
+        }
+    }
+
+    /// The pinned reference window ID — its thumbnail gets the pinned overlay.
+    var pinnedReferenceWindowID: CGWindowID? {
+        didSet {
+            for (id, window) in thumbnailWindows {
+                window.isPinnedReference = (id == pinnedReferenceWindowID)
             }
         }
     }
@@ -52,6 +63,7 @@ final class OverlayWindowController {
             if let existingWindow = thumbnailWindows[slot.windowID] {
                 existingWindow.updateWindowInfo(info)
                 existingWindow.isActiveWindow = (slot.windowID == activeWindowID)
+                existingWindow.isPinnedReference = (slot.windowID == pinnedReferenceWindowID)
                 // Don't animate the window being dragged — user controls its position
                 if slot.windowID != draggingWindowID {
                     existingWindow.animateTo(frame: slot.rect)
@@ -59,6 +71,7 @@ final class OverlayWindowController {
             } else {
                 let thumbWindow = ThumbnailWindow(windowInfo: info, frame: slot.rect)
                 thumbWindow.isActiveWindow = (slot.windowID == activeWindowID)
+                thumbWindow.isPinnedReference = (slot.windowID == pinnedReferenceWindowID)
                 thumbWindow.onClick = { [weak self] clickedInfo in
                     self?.onThumbnailClicked?(clickedInfo)
                 }
@@ -76,6 +89,9 @@ final class OverlayWindowController {
                 }
                 thumbWindow.onDragSpringLoad = { [weak self] windowID in
                     self?.onThumbnailDragSpringLoad?(windowID)
+                }
+                thumbWindow.onPinClicked = { [weak self] windowInfo in
+                    self?.onThumbnailPinClicked?(windowInfo)
                 }
                 thumbWindow.orderFrontRegardless()
                 thumbnailWindows[slot.windowID] = thumbWindow
@@ -114,6 +130,13 @@ final class OverlayWindowController {
     func hideHints() {
         for (_, window) in thumbnailWindows {
             window.hideHint()
+        }
+    }
+
+    /// Update hint badges to show pin icon alongside the key character.
+    func showHintPinMode() {
+        for (_, window) in thumbnailWindows {
+            window.showHintPinIcon()
         }
     }
 

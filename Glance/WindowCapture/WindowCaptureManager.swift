@@ -56,13 +56,19 @@ final class WindowCaptureManager {
         let windows = trackedWindows
 
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-            for (windowID, _) in windows {
+            for (windowID, info) in windows {
                 guard let image = CGWindowListCreateImage(
                     .null,
                     .optionIncludingWindow,
                     windowID,
                     [.boundsIgnoreFraming, .bestResolution]
                 ) else {
+                    logger.warning("CGWindowListCreateImage returned nil for \(info.displayName) (wid \(windowID)), frame=\(info.frame.width)x\(info.frame.height) onScreen=\(info.isOnScreen)")
+                    continue
+                }
+
+                if image.width <= 1 || image.height <= 1 {
+                    logger.warning("Tiny image for \(info.displayName) (wid \(windowID)): \(image.width)x\(image.height)")
                     continue
                 }
 

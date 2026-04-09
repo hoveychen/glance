@@ -320,8 +320,15 @@ final class WindowTracker {
             // Check if this window is on the virtual display by its frame position
             let vdm = VirtualDisplayManager.shared
             if vdm.isActive && existing.frame.origin.x >= vdm.origin.x - 100 {
-                newWindows.append(existing)
-                seenPIDs.insert(existing.ownerPID)
+                // Verify the window still exists at the OS level — it may have been
+                // closed (Cmd+W) or its app may have quit (Cmd+Q).
+                if let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], existing.windowID) as? [[CFString: Any]],
+                   list.contains(where: { ($0[kCGWindowNumber] as? CGWindowID) == existing.windowID }) {
+                    newWindows.append(existing)
+                    seenPIDs.insert(existing.ownerPID)
+                } else {
+                    logger.info("Parked window \(existing.displayName) dropped — window no longer exists")
+                }
             }
         }
 
