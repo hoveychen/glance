@@ -60,6 +60,8 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Developer ID Application" \
             DEVELOPMENT_TEAM="${{ secrets.DEVELOPMENT_TEAM }}" \
+            OTHER_CODE_SIGN_FLAGS=--timestamp \
+            CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
             ARCHS="arm64 x86_64" \
             ONLY_ACTIVE_ARCH=NO \
             build
@@ -114,11 +116,24 @@ jobs:
           echo -n "$NOTARY_API_KEY_BASE64" | base64 --decode -o "$API_KEY_PATH"
 
           # Submit for notarization
-          xcrun notarytool submit Glance.pkg \
+          SUBMIT_OUTPUT=$(xcrun notarytool submit Glance.pkg \
             --key "$API_KEY_PATH" \
             --key-id "$NOTARY_API_KEY_ID" \
             --issuer "$NOTARY_API_ISSUER_ID" \
-            --wait
+            --wait 2>&1) || true
+
+          echo "$SUBMIT_OUTPUT"
+
+          SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | grep "id:" | head -1 | awk '{print $2}')
+
+          if echo "$SUBMIT_OUTPUT" | grep -q "status: Invalid"; then
+            echo "::error::Notarization failed. Fetching rejection log..."
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --key "$API_KEY_PATH" \
+              --key-id "$NOTARY_API_KEY_ID" \
+              --issuer "$NOTARY_API_ISSUER_ID"
+            exit 1
+          fi
 
           # Staple the ticket
           xcrun stapler staple Glance.pkg

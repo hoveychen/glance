@@ -17,5 +17,6 @@ test_*
 *.app
 *.dmg
 *.pkg
+build.env
 *.zip
 build_check/
