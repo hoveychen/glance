@@ -496,7 +496,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let orderedInfos = windowOrder.compactMap { id in thumbnailInfos.first { $0.windowID == id } }
         let metrics = orderedInfos.map { info -> WindowMetrics in
             let frameForRatio: CGRect
-            if let orig = AccessibilityManager.shared.getOriginalFrame(for: info.windowID) {
+            if info.windowID == effectiveMainID {
+                // Active window is in the work area and may have been resized;
+                // use its current frame so the thumbnail slot matches the captured image.
+                frameForRatio = info.frame
+            } else if let orig = AccessibilityManager.shared.getOriginalFrame(for: info.windowID) {
                 frameForRatio = orig
             } else {
                 frameForRatio = info.frame
