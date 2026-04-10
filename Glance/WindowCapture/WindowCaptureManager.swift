@@ -57,6 +57,10 @@ final class WindowCaptureManager {
 
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             for (windowID, info) in windows {
+                // Skip private/incognito windows to avoid the macOS
+                // "trying to record a private browsing window" alert.
+                if info.isPrivateBrowsing { continue }
+
                 guard let image = CGWindowListCreateImage(
                     .null,
                     .optionIncludingWindow,

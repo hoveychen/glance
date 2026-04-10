@@ -111,6 +111,17 @@ final class WindowInfo: Identifiable, Hashable {
         hasher.combine(windowID)
     }
 
+    /// The CGWindowSharingType value from CGWindowListCopyWindowInfo.
+    /// 0 = kCGWindowSharingNone (private/non-capturable),
+    /// 1 = kCGWindowSharingReadOnly, 2 = kCGWindowSharingReadWrite.
+    var sharingState: Int = 2
+
+    /// Whether this window is marked as non-shareable by the system
+    /// (e.g. private/incognito browsing windows set sharingType = .none).
+    var isPrivateBrowsing: Bool {
+        sharingState == 0  // kCGWindowSharingNone
+    }
+
     /// Human-readable display name for the thumbnail label.
     var displayName: String {
         if title.isEmpty {

@@ -277,6 +277,7 @@ final class WindowTracker {
 
             let frame = CGRect(x: x, y: y, width: w, height: h)
             let isOnScreen = entry[kCGWindowIsOnscreen] as? Bool ?? true
+            let sharingState = entry[kCGWindowSharingState] as? Int ?? 2
             seenIDs.insert(windowID)
             seenPIDs.insert(ownerPID)
 
@@ -286,6 +287,7 @@ final class WindowTracker {
                 existing.frame = frame
                 existing.isOnScreen = isOnScreen
                 existing.windowLevel = layer
+                existing.sharingState = sharingState
                 newWindows.append(existing)
             } else {
                 let info = WindowInfo(
@@ -297,6 +299,7 @@ final class WindowTracker {
                     isOnScreen: isOnScreen
                 )
                 info.windowLevel = layer
+                info.sharingState = sharingState
                 // Determine which screen this window belongs to (CG coords: top-left origin)
                 let centerX = x + w / 2
                 let centerY = y + h / 2

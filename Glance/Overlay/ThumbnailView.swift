@@ -30,6 +30,9 @@ final class ThumbnailView: NSView {
     private let pinnedOverlay = CALayer()
     private let pinnedLabel = CATextLayer()
     private let hintLayer = CATextLayer()
+    private let privatePlaceholder = CALayer()
+    private let privateLockLabel = CATextLayer()
+    private let privateSizeLabel = CATextLayer()
     private var pinButton: NSButton!
     private var trackingArea: NSTrackingArea?
     private var isMouseInside = false
@@ -144,6 +147,32 @@ final class ThumbnailView: NSView {
         hintLayer.cornerRadius = 6
         hintLayer.isHidden = true
         layer?.addSublayer(hintLayer)
+
+        // Private browsing placeholder
+        privatePlaceholder.backgroundColor = NSColor(white: 0.12, alpha: 1.0).cgColor
+        privatePlaceholder.cornerRadius = 8
+        privatePlaceholder.masksToBounds = true
+        privatePlaceholder.isHidden = true
+        layer?.addSublayer(privatePlaceholder)
+
+        privateLockLabel.string = "🔒 Private"
+        privateLockLabel.fontSize = 14
+        privateLockLabel.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        privateLockLabel.foregroundColor = NSColor.white.withAlphaComponent(0.6).cgColor
+        privateLockLabel.backgroundColor = NSColor.clear.cgColor
+        privateLockLabel.alignmentMode = .center
+        privateLockLabel.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        privateLockLabel.isHidden = true
+        layer?.addSublayer(privateLockLabel)
+
+        privateSizeLabel.fontSize = 12
+        privateSizeLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        privateSizeLabel.foregroundColor = NSColor.white.withAlphaComponent(0.4).cgColor
+        privateSizeLabel.backgroundColor = NSColor.clear.cgColor
+        privateSizeLabel.alignmentMode = .center
+        privateSizeLabel.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        privateSizeLabel.isHidden = true
+        layer?.addSublayer(privateSizeLabel)
     }
 
     @objc private func pinButtonClicked() {
@@ -191,6 +220,17 @@ final class ThumbnailView: NSView {
             width: hintSize, height: hintSize
         )
 
+        // Private browsing placeholder covers image area
+        privatePlaceholder.frame = imageRect
+        let lockH: CGFloat = 18
+        let sizeH: CGFloat = 16
+        let gap2: CGFloat = 4
+        let totalH = lockH + gap2 + sizeH
+        let lockY = (imageRect.height - totalH) / 2 + sizeH + gap2
+        let sizeY = (imageRect.height - totalH) / 2
+        privateLockLabel.frame = CGRect(x: 0, y: lockY, width: imageRect.width, height: lockH)
+        privateSizeLabel.frame = CGRect(x: 0, y: sizeY, width: imageRect.width, height: sizeH)
+
         let scale = window?.screen?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         labelLayer.contentsScale = scale
         imageLayer.contentsScale = scale
@@ -198,6 +238,8 @@ final class ThumbnailView: NSView {
         pinnedLabel.contentsScale = scale
         hintLayer.contentsScale = scale
         iconLayer.contentsScale = scale
+        privateLockLabel.contentsScale = scale
+        privateSizeLabel.contentsScale = scale
 
         CATransaction.commit()
     }
@@ -257,6 +299,7 @@ final class ThumbnailView: NSView {
     }
 
     func updateImage(_ image: CGImage) {
+        guard windowInfo?.isPrivateBrowsing != true else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         imageLayer.contents = image
@@ -265,11 +308,22 @@ final class ThumbnailView: NSView {
 
     private func updateLabel() {
         labelLayer.string = windowInfo?.displayName ?? ""
-        if let image = windowInfo?.latestImage {
-            imageLayer.contents = image
-        }
         if let icon = windowInfo?.appIcon {
             iconLayer.contents = icon
+        }
+
+        let isPrivate = windowInfo?.isPrivateBrowsing == true
+        privatePlaceholder.isHidden = !isPrivate
+        privateLockLabel.isHidden = !isPrivate
+        privateSizeLabel.isHidden = !isPrivate
+        imageLayer.isHidden = isPrivate
+
+        if isPrivate, let info = windowInfo {
+            let w = Int(info.frame.width)
+            let h = Int(info.frame.height)
+            privateSizeLabel.string = "\(w) × \(h)"
+        } else if let image = windowInfo?.latestImage {
+            imageLayer.contents = image
         }
     }
 
