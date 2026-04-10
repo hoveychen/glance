@@ -210,11 +210,13 @@ final class VirtualDisplayManager {
             parkingSlots[windowID] = slot
             nextSlot += 1
         }
-        let col = slot % 10
-        let row = slot / 10
+        let spacing: CGFloat = 20
+        let cols = max(Int(size.width / spacing), 1)
+        let col = slot % cols
+        let row = slot / cols
         return CGPoint(
-            x: origin.x + CGFloat(col) * 350 + 50,
-            y: origin.y + CGFloat(row) * 250 + 50
+            x: origin.x + CGFloat(col) * spacing + 10,
+            y: origin.y + CGFloat(row) * spacing + 10
         )
     }
 
