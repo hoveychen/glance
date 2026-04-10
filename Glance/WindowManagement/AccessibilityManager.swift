@@ -301,6 +301,7 @@ final class AccessibilityManager {
         }
 
         let target = vdm.parkingPosition(for: windowID)
+        let beforePos = getAXPosition(window)
         var position = target
         guard let posValue = AXValueCreate(.cgPoint, &position) else { return false }
         let result = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, posValue)
@@ -309,9 +310,13 @@ final class AccessibilityManager {
             return false
         }
 
-        // Verify the window actually moved toward the virtual display
-        if let newPos = getAXPosition(window), newPos.x < vdm.origin.x - 200 {
-            logger.warning("parkMainWindow: window \(windowID) didn't move to VD (pos: \(newPos.x))")
+        // Verify the window actually landed within the virtual display bounds
+        let newPos = getAXPosition(window)
+        let vdRect = CGRect(origin: vdm.origin, size: vdm.size)
+        let onVD = newPos.map { vdRect.contains($0) } ?? false
+        logger.warning("parkMainWindow: wid=\(windowID) before=(\(beforePos?.x ?? -1), \(beforePos?.y ?? -1)) target=(\(target.x), \(target.y)) actual=(\(newPos?.x ?? -1), \(newPos?.y ?? -1)) onVD=\(onVD)")
+        if !onVD {
+            logger.warning("parkMainWindow: window \(windowID) not within VD bounds (\(vdRect.origin.x),\(vdRect.origin.y) \(vdRect.size.width)x\(vdRect.size.height))")
             return false
         }
 
@@ -341,6 +346,7 @@ final class AccessibilityManager {
 
         // Move to virtual display (AX coordinates: top-left origin)
         let target = vdm.parkingPosition(for: windowID)
+        let beforePos = getAXPosition(axWin)
         var position = target
         guard let posValue = AXValueCreate(.cgPoint, &position) else { return false }
         let result = AXUIElementSetAttributeValue(axWin, kAXPositionAttribute as CFString, posValue)
@@ -349,9 +355,13 @@ final class AccessibilityManager {
             return false
         }
 
-        // Verify the window actually moved toward the virtual display
-        if let newPos = getAXPosition(axWin), newPos.x < vdm.origin.x - 200 {
-            logger.warning("moveToVirtualDisplay: window \(windowID) didn't move to VD (pos: \(newPos.x), vdOrigin: \(vdm.origin.x))")
+        // Verify the window actually landed within the virtual display bounds
+        let newPos = getAXPosition(axWin)
+        let vdRect = CGRect(origin: vdm.origin, size: vdm.size)
+        let onVD = newPos.map { vdRect.contains($0) } ?? false
+        logger.warning("moveToVirtualDisplay: wid=\(windowID) pid=\(pid) before=(\(beforePos?.x ?? -1), \(beforePos?.y ?? -1)) target=(\(target.x), \(target.y)) actual=(\(newPos?.x ?? -1), \(newPos?.y ?? -1)) onVD=\(onVD)")
+        if !onVD {
+            logger.warning("moveToVirtualDisplay: window \(windowID) not within VD bounds (\(vdRect.origin.x),\(vdRect.origin.y) \(vdRect.size.width)x\(vdRect.size.height))")
             return false
         }
 
@@ -545,11 +555,21 @@ final class AccessibilityManager {
         }
 
         let target = vdm.parkingPosition(for: windowID)
+        let beforePos = getAXPosition(window)
         var position = target
         guard let posValue = AXValueCreate(.cgPoint, &position) else { return false }
         let result = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, posValue)
         if result != .success {
             logger.warning("parkReferenceWindow: AX set position failed for \(windowID)")
+            return false
+        }
+
+        let newPos = getAXPosition(window)
+        let vdRect = CGRect(origin: vdm.origin, size: vdm.size)
+        let onVD = newPos.map { vdRect.contains($0) } ?? false
+        logger.warning("parkReferenceWindow: wid=\(windowID) before=(\(beforePos?.x ?? -1), \(beforePos?.y ?? -1)) target=(\(target.x), \(target.y)) actual=(\(newPos?.x ?? -1), \(newPos?.y ?? -1)) onVD=\(onVD)")
+        if !onVD {
+            logger.warning("parkReferenceWindow: window \(windowID) not within VD bounds (\(vdRect.origin.x),\(vdRect.origin.y) \(vdRect.size.width)x\(vdRect.size.height))")
             return false
         }
 
