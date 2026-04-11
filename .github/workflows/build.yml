@@ -26,11 +26,18 @@ jobs:
         working-directory: glance-windows
         run: cargo test
 
+      - name: Install WiX Toolset
+        run: dotnet tool install --global wix --version 5.0.2
+
+      - name: Build MSI installer
+        working-directory: glance-windows
+        run: wix build -o Glance.msi -arch x64 -bindpath target\release installer\Package.wxs
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: Glance-Windows
-          path: glance-windows/target/release/glance-windows.exe
+          path: glance-windows/Glance.msi
 
   build:
     needs: build-windows
@@ -193,7 +200,7 @@ jobs:
         with:
           files: |
             Glance.pkg
-            windows-artifact/glance-windows.exe
+            windows-artifact/Glance.msi
           generate_release_notes: true
 
       - name: Cleanup keychain

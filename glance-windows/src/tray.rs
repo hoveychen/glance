@@ -32,11 +32,12 @@ mod platform {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-        GetCursorPos, LoadIconW, PostMessageW, RegisterClassExW, SetForegroundWindow,
-        TrackPopupMenu, UnregisterClassW, IDI_APPLICATION, MF_SEPARATOR, MF_STRING,
+        GetCursorPos, LoadImageW, PostMessageW, RegisterClassExW, SetForegroundWindow,
+        TrackPopupMenu, UnregisterClassW, IMAGE_ICON, LR_DEFAULTSIZE, MF_SEPARATOR, MF_STRING,
         TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_COMMAND, WM_DESTROY,
         WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_USER, WNDCLASSEXW, WS_OVERLAPPED,
     };
+    use windows::Win32::UI::WindowsAndMessaging::HICON;
 
     /// Custom callback message ID for tray icon notifications.
     const WM_TRAYICON: u32 = WM_USER + 1;
@@ -238,9 +239,19 @@ mod platform {
                 )
                 .map_err(|e| format!("CreateWindowExW failed: {e}"))?;
 
-                // Load a placeholder icon (built-in IDI_APPLICATION).
-                let hicon = LoadIconW(None, IDI_APPLICATION)
-                    .map_err(|e| format!("LoadIconW failed: {e}"))?;
+                // Load the app icon embedded in the exe resource.
+                let hicon = HICON(
+                    LoadImageW(
+                        hinstance,
+                        windows::core::PCWSTR(1 as *const u16), // resource ID 1 (set by winres)
+                        IMAGE_ICON,
+                        0,
+                        0,
+                        LR_DEFAULTSIZE,
+                    )
+                    .map_err(|e| format!("LoadImageW failed: {e}"))?
+                    .0,
+                );
 
                 // Set up NOTIFYICONDATAW.
                 let mut nid: NOTIFYICONDATAW = mem::zeroed();

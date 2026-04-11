@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="Glance"
+    Manufacturer="hoveychen"
+    Version="0.1.0.0"
+    UpgradeCode="8D9A8E2C-6650-4D45-981B-15C79C06514F">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Add/Remove Programs -->
+    <Property Id="ARPNOREPAIR" Value="yes" Secure="yes" />
+    <Property Id="ARPNOMODIFY" Value="yes" Secure="yes" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/hoveychen/hacker-screen" />
+
+    <Feature Id="Main">
+      <ComponentGroupRef Id="AppComponents" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+
+    <!-- Install to Program Files\Glance -->
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="Glance" />
+    </StandardDirectory>
+
+    <!-- Start Menu -->
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppStartMenuFolder" Name="Glance" />
+    </StandardDirectory>
+  </Package>
+
+  <!-- Application files -->
+  <Fragment>
+    <ComponentGroup Id="AppComponents" Directory="INSTALLFOLDER">
+      <Component Id="MainExecutable" Guid="*">
+        <File Id="GlanceExe" Source="glance-windows.exe" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <!-- Start Menu shortcut -->
+  <Fragment>
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="StartMenuShortcut" Guid="*">
+        <Shortcut
+          Id="AppStartMenuShortcut"
+          Name="Glance"
+          Description="Glance - Window Overview"
+          Target="[INSTALLFOLDER]glance-windows.exe"
+          WorkingDirectory="INSTALLFOLDER"
+          Directory="AppStartMenuFolder" />
+        <RemoveFolder Id="CleanUpStartMenu" Directory="AppStartMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\hoveychen\Glance" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>
