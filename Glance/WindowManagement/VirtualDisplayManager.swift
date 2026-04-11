@@ -155,6 +155,8 @@ final class VirtualDisplayManager {
         displayID = 0
         origin = .zero
         size = .zero
+        parkingSlots.removeAll()
+        nextSlot = 0
         logger.warning("Virtual display destroyed")
     }
 

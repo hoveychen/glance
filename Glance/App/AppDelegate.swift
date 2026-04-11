@@ -387,7 +387,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             effectiveMainID = mainWindowID ?? windows.first?.windowID
         }
         if let newID = newWindowIDs.first(where: { id in
-            // Must not be the current main, must not be already parked, must be the pinned reference
+            // Must not be the current main, must not be already parked, must not be the pinned reference
             id != effectiveMainID && !parkedWindows.contains(id) && id != pinnedReferenceWindowID
         }), let newInfo = windows.first(where: { $0.windowID == newID }) {
             // Use AX subrole classification to decide whether to auto-swap.

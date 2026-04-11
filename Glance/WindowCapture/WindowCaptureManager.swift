@@ -53,31 +53,37 @@ final class WindowCaptureManager {
     }
 
     private func captureAllWindows() {
-        let windows = trackedWindows
+        // Snapshot the info we need on the main thread to avoid data races.
+        // WindowInfo is a reference type whose properties may be mutated on
+        // the main thread by WindowTracker while we read on a background queue.
+        let snapshots: [(windowID: CGWindowID, isPrivate: Bool, displayName: String, frameW: CGFloat, frameH: CGFloat, isOnScreen: Bool)] =
+            trackedWindows.map { (windowID, info) in
+                (windowID, info.isPrivateBrowsing, info.displayName, info.frame.width, info.frame.height, info.isOnScreen)
+            }
 
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-            for (windowID, info) in windows {
+            for snap in snapshots {
                 // Skip private/incognito windows to avoid the macOS
                 // "trying to record a private browsing window" alert.
-                if info.isPrivateBrowsing { continue }
+                if snap.isPrivate { continue }
 
                 guard let image = CGWindowListCreateImage(
                     .null,
                     .optionIncludingWindow,
-                    windowID,
+                    snap.windowID,
                     [.boundsIgnoreFraming, .bestResolution]
                 ) else {
-                    logger.warning("CGWindowListCreateImage returned nil for \(info.displayName) (wid \(windowID)), frame=\(info.frame.width)x\(info.frame.height) onScreen=\(info.isOnScreen)")
+                    logger.warning("CGWindowListCreateImage returned nil for \(snap.displayName) (wid \(snap.windowID)), frame=\(snap.frameW)x\(snap.frameH) onScreen=\(snap.isOnScreen)")
                     continue
                 }
 
                 if image.width <= 1 || image.height <= 1 {
-                    logger.warning("Tiny image for \(info.displayName) (wid \(windowID)): \(image.width)x\(image.height)")
+                    logger.warning("Tiny image for \(snap.displayName) (wid \(snap.windowID)): \(image.width)x\(image.height)")
                     continue
                 }
 
                 DispatchQueue.main.async {
-                    self?.frameCallback?(windowID, image)
+                    self?.frameCallback?(snap.windowID, image)
                 }
             }
         }

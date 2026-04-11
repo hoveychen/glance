@@ -692,10 +692,7 @@ final class AccessibilityManager {
             }
         }
 
-        // Accept match if reasonably close (within 50px total deviation)
-        if bestDist < 50 { return bestMatch }
-
-        // Looser fallback: just position match
+        // Accept match if reasonably close (within 200px total deviation)
         if bestDist < 200 { return bestMatch }
 
         // Only return the first window if it's the app's sole window.
