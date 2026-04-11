@@ -5,7 +5,7 @@
 #[cfg(windows)]
 use windows::Win32::Foundation::RECT as WinRECT;
 #[cfg(windows)]
-use windows::Win32::UI::WindowsAndMessaging::HICON;
+pub use windows::Win32::UI::WindowsAndMessaging::HICON;
 
 /// Lightweight stand-in for Win32 `RECT` on non-Windows platforms.
 #[cfg(not(windows))]

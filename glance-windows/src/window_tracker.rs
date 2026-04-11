@@ -91,7 +91,12 @@ mod platform {
             };
             let mut buf = [0u16; MAX_PATH as usize];
             let mut size = buf.len() as u32;
-            let ok = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, &mut buf, &mut size);
+            let ok = QueryFullProcessImageNameW(
+                handle,
+                PROCESS_NAME_WIN32,
+                windows::core::PWSTR(buf.as_mut_ptr()),
+                &mut size,
+            );
             let _ = CloseHandle(handle);
             if ok.is_err() || size == 0 {
                 return String::new();
@@ -143,7 +148,7 @@ mod platform {
     fn get_app_icon(hwnd: HWND) -> Option<HICON> {
         unsafe {
             // Try SendMessageTimeout with WM_GETICON first.
-            let mut result = windows::Win32::Foundation::LRESULT::default();
+            let mut result: usize = 0;
             let ok = SendMessageTimeoutW(
                 hwnd,
                 WM_GETICON,
@@ -151,10 +156,10 @@ mod platform {
                 windows::Win32::Foundation::LPARAM(0),
                 SMTO_ABORTIFHUNG,
                 100, // ms timeout
-                Some(&mut result),
+                Some(&mut result as *mut usize),
             );
-            if ok != windows::Win32::Foundation::LRESULT(0) && result.0 != 0 {
-                return Some(HICON(result.0 as *mut _));
+            if ok != windows::Win32::Foundation::LRESULT(0) && result != 0 {
+                return Some(HICON(result as *mut _));
             }
             // Fallback: class icon.
             let icon = GetClassLongPtrW(hwnd, GCLP_HICON);

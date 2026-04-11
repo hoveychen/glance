@@ -125,7 +125,7 @@ mod platform {
                 nid.cbSize = mem::size_of::<NOTIFYICONDATAW>() as u32;
                 nid.hWnd = hwnd;
                 nid.uID = TRAY_UID;
-                Shell_NotifyIconW(NIM_DELETE, &nid);
+                let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
                 LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -170,9 +170,9 @@ mod platform {
 
         // Required by Windows: SetForegroundWindow before TrackPopupMenu,
         // otherwise the menu won't dismiss when clicked outside.
-        SetForegroundWindow(hwnd);
+        let _ = SetForegroundWindow(hwnd);
 
-        TrackPopupMenu(
+        let _ = TrackPopupMenu(
             hmenu,
             TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RIGHTBUTTON,
             pt.x,
@@ -191,6 +191,7 @@ mod platform {
 
     pub struct TrayIcon {
         hwnd: HWND,
+        #[allow(dead_code)]
         class_atom: u16,
     }
 
@@ -272,7 +273,7 @@ mod platform {
                 nid.cbSize = mem::size_of::<NOTIFYICONDATAW>() as u32;
                 nid.hWnd = self.hwnd;
                 nid.uID = TRAY_UID;
-                Shell_NotifyIconW(NIM_DELETE, &nid);
+                let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
 
                 // Destroy the hidden window.
                 let _ = DestroyWindow(self.hwnd);

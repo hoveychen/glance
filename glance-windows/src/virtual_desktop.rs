@@ -21,6 +21,7 @@ pub struct VirtualDesktopManager {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 impl VirtualDesktopManager {
     /// Initialise COM (apartment-threaded) and create the manager instance.
     pub fn new() -> Result<Self, String> {
@@ -192,6 +193,7 @@ pub fn unpark_window_from_offscreen(_hwnd: isize, _original_rect: &Rect) {}
 /// If COM initialisation fails (e.g. running on an older Windows version or
 /// in a restricted environment), parking transparently falls back to moving
 /// windows off-screen at `(-32000 + slot*100, -32000)`.
+#[allow(dead_code)]
 pub struct ParkingManager {
     /// `None` when COM init failed — triggers the off-screen fallback.
     vdm: Option<VirtualDesktopManager>,
@@ -209,6 +211,7 @@ pub struct ParkingManager {
     next_slot: usize,
 }
 
+#[allow(dead_code)]
 impl ParkingManager {
     /// Create a new parking manager.
     ///

@@ -521,7 +521,7 @@ mod platform {
             paint_hint_badge(hdc, &client_rect, hint);
         }
 
-        EndPaint(hwnd, &ps);
+        let _ = EndPaint(hwnd, &ps);
     }
 
     /// Paint a semi-transparent dim overlay with a centered label.

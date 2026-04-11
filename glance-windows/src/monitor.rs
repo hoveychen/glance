@@ -6,6 +6,7 @@ use crate::types::{Rect, ScreenRegion};
 
 /// Snapshot of a single display/monitor.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct MonitorInfo {
     /// Raw `HMONITOR` handle (as `isize` for hashing/equality).
     pub handle: isize,
@@ -32,6 +33,7 @@ pub struct MonitorManager {
     monitors: Vec<MonitorInfo>,
 }
 
+#[allow(dead_code)]
 impl MonitorManager {
     /// Create a new `MonitorManager`, enumerating all connected monitors.
     pub fn new() -> Self {
@@ -92,17 +94,17 @@ impl MonitorManager {
 // ===========================================================================
 
 #[cfg(windows)]
+#[allow(dead_code)]
 mod platform {
     use super::*;
     use std::mem;
     use windows::Win32::Foundation::{BOOL, LPARAM, POINT, RECT};
     use windows::Win32::Graphics::Gdi::{
         EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
+        MONITOR_DEFAULTTONEAREST,
     };
     use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        MONITORINFOF_PRIMARY, MONITOR_DEFAULTTONEAREST,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
 
     /// Convert a Win32 `RECT` (left/top/right/bottom, i32) to our `Rect`
     /// (x/y/width/height, f64).
@@ -272,12 +274,14 @@ pub fn enumerate_monitors() -> Vec<MonitorInfo> {
 ///
 /// Uses the current `MonitorManager`'s cached list; for a one-shot query,
 /// prefer `MonitorManager::monitor_at` or call this after `enumerate_monitors`.
+#[allow(dead_code)]
 pub fn monitor_from_point(x: f64, y: f64) -> Option<usize> {
     let monitors = enumerate_monitors();
     platform::monitor_from_point_impl(&monitors, x, y)
 }
 
 /// Find the monitor index for the monitor a window is on.
+#[allow(dead_code)]
 pub fn monitor_from_window(hwnd: isize) -> Option<usize> {
     let monitors = enumerate_monitors();
     platform::monitor_from_window_impl(&monitors, hwnd)

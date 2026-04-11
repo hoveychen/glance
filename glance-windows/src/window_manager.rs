@@ -8,6 +8,7 @@
 // Windows implementation
 // ---------------------------------------------------------------------------
 #[cfg(windows)]
+#[allow(dead_code)]
 mod platform {
     use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, WPARAM};
     use windows::Win32::System::Threading::{
@@ -225,6 +226,7 @@ use crate::types::HICON;
 /// configuration later without changing call sites.
 pub struct WindowManager;
 
+#[allow(dead_code)]
 impl WindowManager {
     pub fn new() -> Self {
         Self
@@ -273,11 +275,8 @@ impl WindowManager {
 
 // Also expose the free functions at module level for callers that don't need
 // the struct.
-pub use platform::focus_window;
-pub use platform::get_foreground_window;
-pub use platform::get_process_name;
-pub use platform::get_window_icon;
-pub use platform::hide_window;
-pub use platform::move_window;
-pub use platform::set_window_topmost;
-pub use platform::show_window;
+#[allow(unused_imports)]
+pub use platform::{
+    focus_window, get_foreground_window, get_process_name, get_window_icon,
+    hide_window, move_window, set_window_topmost, show_window,
+};

@@ -60,7 +60,8 @@ fn generate_hint_keys() -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 pub struct GlanceApp {
-    // Modules
+    // Modules (tray must be held alive for the icon to persist)
+    #[allow(dead_code)]
     tray: Option<TrayIcon>,
     window_tracker: WindowTracker,
     window_manager: WindowManager,
@@ -226,7 +227,7 @@ impl GlanceApp {
                     if msg.message == WM_TIMER {
                         let _ = tick_tx.send(AppEvent::Tick);
                     }
-                    TranslateMessage(&msg);
+                    let _ = TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                 }
             }
@@ -958,6 +959,7 @@ impl GlanceApp {
     // Pinned reference
     // -----------------------------------------------------------------------
 
+    #[allow(dead_code)]
     fn pin_as_reference(&mut self, hwnd: isize) {
         if !self.is_active {
             return;

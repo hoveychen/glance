@@ -71,7 +71,7 @@ mod platform {
         GWLP_USERDATA, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION,
         HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, HWND_BOTTOM,
         IDC_SIZEWE, MINMAXINFO, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-        SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WNDCLASSEXW,
+        SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WNDCLASSEXW,
         WM_ERASEBKGND, WM_GETMINMAXINFO, WM_LBUTTONDOWN, WM_LBUTTONUP,
         WM_MOUSEMOVE, WM_MOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR,
         WM_SIZE, WM_SIZING, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
@@ -228,7 +228,7 @@ mod platform {
                 if !hdc.is_invalid() {
                     let cr = client_rect(hwnd);
                     paint_bottom_bar(hwnd, hdc, &cr, state_ptr);
-                    EndPaint(hwnd, &ps);
+                    let _ = EndPaint(hwnd, &ps);
                 }
                 return LRESULT(0);
             }
@@ -238,7 +238,7 @@ mod platform {
                     let frame = window_rect(hwnd);
                     let _ = (*state_ptr).sender.send(WorkAreaEvent::Resized(frame));
                     // Repaint the bottom bar after resize.
-                    InvalidateRect(hwnd, None, false);
+                    let _ = InvalidateRect(hwnd, None, false);
                 }
                 return LRESULT(0);
             }
@@ -421,7 +421,7 @@ mod platform {
                     let _ = (*state_ptr)
                         .sender
                         .send(WorkAreaEvent::SplitRatioChanged(new_ratio));
-                    InvalidateRect(hwnd, None, false);
+                    let _ = InvalidateRect(hwnd, None, false);
                     return LRESULT(0);
                 }
             }
@@ -467,7 +467,7 @@ mod platform {
         };
         let bar_brush = CreateSolidBrush(COLORREF(0x00201010)); // dark
         FillRect(hdc, &bar_rect, bar_brush);
-        DeleteObject(bar_brush);
+        let _ = DeleteObject(bar_brush);
 
         // Create font for labels.
         let face = wide("Segoe UI");
@@ -540,7 +540,7 @@ mod platform {
 
         // Restore old font, delete ours.
         SelectObject(hdc, old_font);
-        DeleteObject(font);
+        let _ = DeleteObject(font);
     }
 
     // ------------------------------------------------------------------
@@ -741,14 +741,14 @@ mod platform {
                 if !self.state.is_null() {
                     (*self.state).reference_active = active;
                     // Repaint to show/hide the unpin button.
-                    InvalidateRect(self.hwnd, None, false);
+                    let _ = InvalidateRect(self.hwnd, None, false);
                 }
             }
         }
 
         pub fn show(&self) {
             unsafe {
-                ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+                let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
                 // Keep behind normal windows.
                 let _ = SetWindowPos(
                     self.hwnd,
@@ -764,7 +764,7 @@ mod platform {
 
         pub fn hide(&self) {
             unsafe {
-                ShowWindow(self.hwnd, SW_HIDE);
+                let _ = ShowWindow(self.hwnd, SW_HIDE);
             }
         }
 
