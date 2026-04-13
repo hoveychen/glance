@@ -50,7 +50,7 @@ mod platform {
     use windows::Win32::Graphics::Dwm::{
         DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
         DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE,
-        DWMSBT_TABBEDWINDOW, DWM_SYSTEMBACKDROP_TYPE,
+        DWMSBT_TRANSIENTWINDOW, DWM_SYSTEMBACKDROP_TYPE,
     };
     use windows::Win32::Graphics::Gdi::{
         BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW,
@@ -74,7 +74,7 @@ mod platform {
         SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WNDCLASSEXW,
         WM_ERASEBKGND, WM_GETMINMAXINFO, WM_LBUTTONDOWN, WM_LBUTTONUP,
         WM_MOUSEMOVE, WM_MOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR,
-        WM_SIZE, WM_SIZING, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+        WM_SIZE, WM_SIZING, WS_EX_TOOLWINDOW,
         WS_POPUP, WS_THICKFRAME,
     };
 
@@ -566,8 +566,12 @@ mod platform {
         };
         let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
 
-        // Set system backdrop type to Mica Alt (tabbed window).
-        let backdrop_type: DWM_SYSTEMBACKDROP_TYPE = DWMSBT_TABBEDWINDOW;
+        // Set system backdrop type to Acrylic (transient window). This is the
+        // closest Windows 11 analogue to macOS's NSVisualEffectView
+        // `.hudWindow` material — a strongly blurred, translucent frosted
+        // glass effect. Mica Alt (DWMSBT_TABBEDWINDOW) is too opaque / too
+        // dark for a HUD-style surface.
+        let backdrop_type: DWM_SYSTEMBACKDROP_TYPE = DWMSBT_TRANSIENTWINDOW;
         let _ = DwmSetWindowAttribute(
             hwnd,
             DWMWA_SYSTEMBACKDROP_TYPE,
@@ -611,7 +615,12 @@ mod platform {
                     return Err("RegisterClassExW failed for GlanceWorkArea".to_string());
                 }
 
-                let ex_style = WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP;
+                // Note: WS_EX_NOREDIRECTIONBITMAP must NOT be used here. That
+                // flag disables the GDI redirection surface, which would make
+                // all BeginPaint/FillRect/DrawTextW output invisible — the
+                // bottom bar and its text/buttons vanish while only the
+                // DWM-composited backdrop remains.
+                let ex_style = WS_EX_TOOLWINDOW;
                 let style = WS_POPUP | WS_THICKFRAME;
 
                 let hwnd = CreateWindowExW(

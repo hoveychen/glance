@@ -57,7 +57,7 @@ mod platform {
         CreateWindowExW, DefWindowProcW, DestroyWindow, DrawIconEx, GetClientRect, GetCursorPos,
         GetWindowLongPtrW, RegisterClassExW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
         GWLP_USERDATA, HTCLIENT, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOSIZE,
-        SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_LBUTTONDOWN, WM_LBUTTONUP,
+        SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP,
         WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED,
         WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, DI_NORMAL,
         SetLayeredWindowAttributes, LWA_ALPHA,
@@ -102,7 +102,6 @@ mod platform {
     // Colors
     const COLOR_HEADER_BG: u32 = rgb(30, 30, 30);        // dark background
     const COLOR_TEXT_WHITE: u32 = rgb(255, 255, 255);
-    const COLOR_THUMBNAIL_BG: u32 = rgb(0, 0, 0);        // black thumbnail area
     const COLOR_BORDER_ACTIVE: u32 = rgb(76, 175, 80);    // green
     const COLOR_BORDER_PINNED: u32 = rgb(33, 150, 243);   // blue
     const COLOR_BORDER_HOVER: u32 = rgb(33, 150, 243);    // blue
@@ -162,14 +161,15 @@ mod platform {
 
             let hinstance = GetModuleHandleW(None).unwrap_or_default();
 
+            // No class background brush: we want DWM to keep compositing the
+            // registered thumbnail without an intervening erase cycle. WM_PAINT
+            // redraws only the header region; the thumbnail area stays owned
+            // by the DWM composition.
             let wc = WNDCLASSEXW {
                 cbSize: mem::size_of::<WNDCLASSEXW>() as u32,
                 lpfnWndProc: Some(overlay_wnd_proc),
                 hInstance: hinstance.into(),
                 lpszClassName: PCWSTR(CLASS_NAME.as_ptr()),
-                hbrBackground: CreateSolidBrush(
-                    windows::Win32::Foundation::COLORREF(COLOR_THUMBNAIL_BG),
-                ),
                 ..Default::default()
             };
 
@@ -279,6 +279,13 @@ mod platform {
             WM_NCHITTEST => {
                 // Always return HTCLIENT so the window receives mouse events.
                 LRESULT(HTCLIENT as isize)
+            }
+
+            WM_ERASEBKGND => {
+                // Skip the default erase to prevent flicker: the thumbnail
+                // area is owned by DWM composition, and WM_PAINT redraws the
+                // header region itself.
+                LRESULT(1)
             }
 
             WM_LBUTTONDOWN => {
@@ -408,9 +415,11 @@ mod platform {
         let mut client_rect = RECT::default();
         let _ = GetClientRect(hwnd, &mut client_rect);
         let width = client_rect.right - client_rect.left;
-        let height = client_rect.bottom - client_rect.top;
 
         // --- Header background ---
+        // Do not fill the thumbnail area: DWM composites the registered
+        // thumbnail on top of this window, and any fill there would flicker
+        // during repaint before the composition frame runs.
         let header_rect = RECT {
             left: 0,
             top: 0,
@@ -421,18 +430,6 @@ mod platform {
             CreateSolidBrush(windows::Win32::Foundation::COLORREF(COLOR_HEADER_BG));
         FillRect(hdc, &header_rect, header_brush);
         let _ = DeleteObject(header_brush);
-
-        // --- Thumbnail area (black) ---
-        let thumb_rect = RECT {
-            left: 0,
-            top: HEADER_HEIGHT,
-            right: width,
-            bottom: height,
-        };
-        let thumb_brush =
-            CreateSolidBrush(windows::Win32::Foundation::COLORREF(COLOR_THUMBNAIL_BG));
-        FillRect(hdc, &thumb_rect, thumb_brush);
-        let _ = DeleteObject(thumb_brush);
 
         // --- App icon (16x16) in the header ---
         let icon_x = 8;
@@ -784,41 +781,57 @@ mod platform {
 
         /// Update the title text displayed in the header.
         pub fn set_title(&mut self, title: &str) {
-            if !self.state_ptr.is_null() {
-                unsafe {
-                    (*self.state_ptr).title = title.to_string();
-                    self.invalidate();
+            if self.state_ptr.is_null() {
+                return;
+            }
+            unsafe {
+                if (*self.state_ptr).title == title {
+                    return;
                 }
+                (*self.state_ptr).title = title.to_string();
+                self.invalidate();
             }
         }
 
         /// Update the icon displayed in the header.
         pub fn set_icon(&mut self, icon: Option<windows::Win32::UI::WindowsAndMessaging::HICON>) {
-            if !self.state_ptr.is_null() {
-                unsafe {
-                    (*self.state_ptr).icon = icon;
-                    self.invalidate();
+            if self.state_ptr.is_null() {
+                return;
+            }
+            unsafe {
+                if (*self.state_ptr).icon == icon {
+                    return;
                 }
+                (*self.state_ptr).icon = icon;
+                self.invalidate();
             }
         }
 
         /// Set the visual state (normal, active, pinned, hovered).
         pub fn set_visual_state(&mut self, visual_state: OverlayVisualState) {
-            if !self.state_ptr.is_null() {
-                unsafe {
-                    (*self.state_ptr).visual_state = visual_state;
-                    self.invalidate();
+            if self.state_ptr.is_null() {
+                return;
+            }
+            unsafe {
+                if (*self.state_ptr).visual_state == visual_state {
+                    return;
                 }
+                (*self.state_ptr).visual_state = visual_state;
+                self.invalidate();
             }
         }
 
         /// Set or clear the hint badge character.
         pub fn set_hint(&mut self, hint: Option<String>) {
-            if !self.state_ptr.is_null() {
-                unsafe {
-                    (*self.state_ptr).hint_char = hint;
-                    self.invalidate();
+            if self.state_ptr.is_null() {
+                return;
+            }
+            unsafe {
+                if (*self.state_ptr).hint_char == hint {
+                    return;
                 }
+                (*self.state_ptr).hint_char = hint;
+                self.invalidate();
             }
         }
 
@@ -838,11 +851,13 @@ mod platform {
             }
         }
 
-        /// Trigger a repaint.
+        /// Trigger a repaint without erasing the background. Erasing would
+        /// briefly clear the region that DWM uses to composite the registered
+        /// thumbnail, causing a visible flicker.
         fn invalidate(&self) {
             unsafe {
                 let hwnd = HWND(self.hwnd as *mut _);
-                let _ = InvalidateRect(hwnd, None, true);
+                let _ = InvalidateRect(hwnd, None, false);
             }
         }
 

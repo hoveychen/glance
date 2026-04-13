@@ -200,7 +200,13 @@ impl GlanceApp {
             DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT, WM_TIMER,
         };
 
-        log::info!("Glance app running (inactive, waiting for activation)");
+        log::info!("Glance app running");
+
+        // Match macOS behaviour: activate immediately on launch. macOS gates
+        // activation behind the onboarding flow, but onboarding completion
+        // (first-run or not) always calls activate(). Windows has no
+        // onboarding, so call activate() directly.
+        self.activate();
 
         // Set up a 1-second timer for periodic refresh ticks.
         let timer_id = unsafe {
@@ -556,16 +562,27 @@ impl GlanceApp {
         }
         self.known_window_ids = current_ids;
 
-        // Update window order (add new windows to the end, keep existing order).
+        // Update window order: keep existing order; insert new windows right
+        // after the last existing window from the same process (fall back to
+        // the end if no sibling exists).
         let mut new_order: Vec<isize> = self
             .window_order
             .iter()
             .copied()
             .filter(|id| self.known_window_ids.contains(id))
             .collect();
+        let pid_by_hwnd: HashMap<isize, u32> =
+            real_windows.iter().map(|w| (w.hwnd, w.owner_pid)).collect();
         for w in &real_windows {
-            if !new_order.contains(&w.hwnd) {
-                new_order.push(w.hwnd);
+            if new_order.contains(&w.hwnd) {
+                continue;
+            }
+            let last_same = new_order
+                .iter()
+                .rposition(|h| pid_by_hwnd.get(h) == Some(&w.owner_pid));
+            match last_same {
+                Some(idx) => new_order.insert(idx + 1, w.hwnd),
+                None => new_order.push(w.hwnd),
             }
         }
         self.window_order = new_order;
