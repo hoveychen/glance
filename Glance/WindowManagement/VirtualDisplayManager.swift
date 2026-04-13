@@ -51,6 +51,14 @@ final class VirtualDisplayManager {
         })
 
         // 1. Create descriptor
+        //
+        // NOTE on retain counts: `.alloc().perform("init")!.takeUnretainedValue()`
+        // is intentional. Swift ARC already tracks the `alloc()` result as a
+        // temporary +1; because Swift doesn't understand that ObjC `init`
+        // consumes self, using `takeRetainedValue()` here would cause the
+        // object to be released twice and crash on autoreleasepool drain.
+        // `takeUnretainedValue()` asks Swift to add an independent +1, which
+        // balances correctly.
         let descObj = descClass.alloc().perform(NSSelectorFromString("init"))!
             .takeUnretainedValue()
 
@@ -82,14 +90,14 @@ final class VirtualDisplayManager {
         }
         logger.warning("Display mode created")
 
-        // 3. Create settings
+        // 3. Create settings (see retain-count note in step 1)
         let settingsObj = settingsClass.alloc().perform(NSSelectorFromString("init"))!
             .takeUnretainedValue()
         settingsObj.perform(NSSelectorFromString("setModes:"), with: [modeObj] as NSArray)
         setUInt32Property(on: settingsObj, selector: "setHiDPI:", value: 0)
         logger.warning("Settings configured")
 
-        // 4. Create virtual display
+        // 4. Create virtual display (see retain-count note in step 1)
         guard let vdResult = displayClass.alloc()
             .perform(NSSelectorFromString("initWithDescriptor:"), with: descObj) else {
             logger.warning("Failed to create virtual display (initWithDescriptor: returned nil)")

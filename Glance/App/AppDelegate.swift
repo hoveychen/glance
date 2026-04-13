@@ -73,9 +73,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Retained during the interactive guide phase (after app is activated).
     private var onboardingGuide: OnboardingController?
 
+    /// Retained NSEvent monitors installed in `setupEventMonitors`, so they can
+    /// be removed during termination.
+    private var eventMonitorTokens: [Any] = []
+
+    /// Whether a hard-exit watchdog has already been scheduled — avoids arming
+    /// multiple watchdogs if the terminate path runs more than once.
+    private var terminateWatchdogArmed = false
+
+    /// Periodic diagnostic heartbeat timer. Logs a compact one-line summary of
+    /// display / virtual-display / overlay state every 30s so we have history
+    /// leading up to any reported bug.
+    private var diagnosticTimer: Timer?
+
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        setupMainMenu()
         setupStatusItem()
 
         NotificationCenter.default.addObserver(
@@ -87,6 +101,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Check for updates (once per day)
         UpdateChecker.shared.checkIfNeeded()
+
+        // Diagnostic heartbeat runs for the whole process lifetime so we have
+        // historical state even while Glance is inactive.
+        startDiagnosticTimer()
+        logger.warning("launch snapshot:\n\(self.diagnosticSnapshot(), privacy: .public)")
 
         // Start onboarding if needed, otherwise activate directly
         let onboarding = OnboardingController()
@@ -110,15 +129,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupEventMonitors() {
-        NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        if let t = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
             if event.modifierFlags.contains([.control, .option]) && event.keyCode == 4 {
                 self?.toggleActive()
             }
             if self?.optionDownTimestamp != 0 {
                 self?.optionWasCombined = true
             }
+        }) {
+            eventMonitorTokens.append(t)
         }
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        if let t = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
             if event.modifierFlags.contains([.control, .option]) && event.keyCode == 4 {
                 self?.toggleActive()
                 return nil
@@ -127,15 +148,122 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.optionWasCombined = true
             }
             return event
+        }) {
+            eventMonitorTokens.append(t)
         }
 
-        NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+        if let t = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged, handler: { [weak self] event in
             self?.handleFlagsChanged(event)
+        }) {
+            eventMonitorTokens.append(t)
         }
-        NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+        if let t = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged, handler: { [weak self] event in
             self?.handleFlagsChanged(event)
             return event
+        }) {
+            eventMonitorTokens.append(t)
         }
+    }
+
+    private func removeEventMonitors() {
+        for token in eventMonitorTokens {
+            NSEvent.removeMonitor(token)
+        }
+        eventMonitorTokens.removeAll()
+    }
+
+    /// Schedules a hard `_exit` after `seconds` so the process is guaranteed to
+    /// die even if cleanup (AX calls, virtual display teardown) hangs. Safe to
+    /// call more than once — only the first arming takes effect.
+    private func armTerminateWatchdog(seconds: Double = 2.0) {
+        if terminateWatchdogArmed { return }
+        terminateWatchdogArmed = true
+        logger.warning("Terminate watchdog armed: \(seconds)s")
+        DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + seconds) {
+            // Bypass atexit/static-destructors — the whole point is that
+            // something in the normal terminate chain is hanging.
+            Darwin._exit(0)
+        }
+    }
+
+    // MARK: - Main Menu Bar
+
+    /// Glance is a regular app (LSUIElement=false) so it shows in the Dock and
+    /// needs a top main menu bar when it's the frontmost app. Without this the
+    /// top menu bar is empty and users can't reach About / Quit / etc from
+    /// there.
+    private func setupMainMenu() {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let shortVersion = info["CFBundleShortVersionString"] as? String ?? "?"
+        let buildNumber = info["CFBundleVersion"] as? String ?? "?"
+
+        let mainMenu = NSMenu()
+
+        // Application menu — macOS automatically renders the first submenu as
+        // the "app menu" (the bold one next to the Apple logo) and uses the
+        // bundle name as its title regardless of what we set here.
+        let appMenuItem = NSMenuItem()
+        mainMenu.addItem(appMenuItem)
+        let appMenu = NSMenu()
+        appMenuItem.submenu = appMenu
+
+        appMenu.addItem(NSMenuItem(
+            title: "About Glance \(shortVersion) (\(buildNumber))",
+            action: #selector(showAbout),
+            keyEquivalent: ""
+        ))
+        appMenu.addItem(NSMenuItem.separator())
+
+        appMenu.addItem(NSMenuItem(
+            title: "Toggle Glance  \u{2303}\u{2325}H",
+            action: #selector(toggleActive),
+            keyEquivalent: ""
+        ))
+        appMenu.addItem(NSMenuItem(
+            title: "Show Guide",
+            action: #selector(showGuideAgain),
+            keyEquivalent: ""
+        ))
+        appMenu.addItem(NSMenuItem(
+            title: "Check for Updates…",
+            action: #selector(checkForUpdates),
+            keyEquivalent: ""
+        ))
+        appMenu.addItem(NSMenuItem.separator())
+
+        appMenu.addItem(NSMenuItem(
+            title: "Copy Diagnostics",
+            action: #selector(copyDiagnostics),
+            keyEquivalent: ""
+        ))
+        appMenu.addItem(NSMenuItem.separator())
+
+        appMenu.addItem(NSMenuItem(
+            title: "Hide Glance",
+            action: #selector(NSApplication.hide(_:)),
+            keyEquivalent: "h"
+        ))
+        let hideOthers = NSMenuItem(
+            title: "Hide Others",
+            action: #selector(NSApplication.hideOtherApplications(_:)),
+            keyEquivalent: "h"
+        )
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthers)
+        appMenu.addItem(NSMenuItem(
+            title: "Show All",
+            action: #selector(NSApplication.unhideAllApplications(_:)),
+            keyEquivalent: ""
+        ))
+        appMenu.addItem(NSMenuItem.separator())
+
+        appMenu.addItem(NSMenuItem(
+            title: "Quit Glance",
+            action: #selector(quitApp),
+            keyEquivalent: "q"
+        ))
+
+        NSApp.mainMenu = mainMenu
     }
 
     // MARK: - Status Bar
@@ -146,10 +274,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.image = NSImage(systemSymbolName: "rectangle.grid.3x2", accessibilityDescription: "Glance")
         }
 
+        // Show the running version directly in the menu item title so users
+        // can verify which build they're running without having to click.
+        let info = Bundle.main.infoDictionary ?? [:]
+        let shortVersion = info["CFBundleShortVersionString"] as? String ?? "?"
+        let buildNumber = info["CFBundleVersion"] as? String ?? "?"
+        let aboutTitle = "About Glance \(shortVersion) (\(buildNumber))"
+
         let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: aboutTitle, action: #selector(showAbout), keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Toggle (\u{2303}\u{2325}H)", action: #selector(toggleActive), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Show Guide", action: #selector(showGuideAgain), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Copy Diagnostics", action: #selector(copyDiagnostics), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
         statusItem.menu = menu
@@ -159,9 +298,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UpdateChecker.shared.checkNow()
     }
 
+    @objc private func showAbout() {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let shortVersion = info["CFBundleShortVersionString"] as? String ?? "?"
+        let buildNumber = info["CFBundleVersion"] as? String ?? "?"
+
+        // Include the executable's modification date so users (and we) can
+        // tell at a glance whether the app binary is actually a new build.
+        var buildDateStr = "unknown"
+        if let execURL = Bundle.main.executableURL,
+           let attrs = try? FileManager.default.attributesOfItem(atPath: execURL.path),
+           let modDate = attrs[.modificationDate] as? Date {
+            let df = DateFormatter()
+            df.dateStyle = .medium
+            df.timeStyle = .short
+            buildDateStr = df.string(from: modDate)
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Glance \(shortVersion) (build \(buildNumber))"
+        alert.informativeText = "Built: \(buildDateStr)\nBundle: \(Bundle.main.bundlePath)"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     @objc private func quitApp() {
+        armTerminateWatchdog()
         deactivate()
+        removeEventMonitors()
         NSApplication.shared.terminate(nil)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // This path handles macOS reboot/logout sending us a quit Apple Event
+        // without going through `quitApp`. Arm the watchdog unconditionally so
+        // Glance can never block system shutdown.
+        armTerminateWatchdog()
+        if isActive { deactivate() }
+        removeEventMonitors()
+        return .terminateNow
     }
 
     @objc private func showGuideAgain() {
@@ -179,12 +355,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !isActive, onboardingController == nil else { return }
         isActive = true
         logger.warning("Activating Glance layout.")
+        logger.warning("pre-create snapshot:\n\(self.diagnosticSnapshot(), privacy: .public)")
 
         if !VirtualDisplayManager.shared.create() {
             logger.error("Failed to create virtual display — cannot activate Glance.")
             isActive = false
             return
         }
+        logger.warning("post-create snapshot:\n\(self.diagnosticSnapshot(), privacy: .public)")
 
         // Restore saved work area frame, or create default
         let waFrame: CGRect
@@ -270,8 +448,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         workAreaWindow?.orderOut(nil)
         workAreaWindow = nil
 
+        logger.warning("pre-destroy snapshot:\n\(self.diagnosticSnapshot(), privacy: .public)")
         VirtualDisplayManager.shared.destroy()
         currentMainWindowID = nil
+        logger.warning("post-destroy snapshot:\n\(self.diagnosticSnapshot(), privacy: .public)")
     }
 
     @objc private func toggleActive() {
@@ -321,6 +501,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func screensDidChange() {
+        logger.warning("screensDidChange:\n\(self.diagnosticSnapshot(), privacy: .public)")
         if isActive {
             createOverlays()
             VirtualDisplayManager.shared.refreshScreenCoordinates()
@@ -483,11 +664,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return true
         }
 
-        // Maintain stable ordering: keep existing order, append new windows
+        // Maintain stable ordering: keep existing order, insert new windows
+        // after the last existing window from the same process (fall back to
+        // the end if no sibling exists).
         let thumbnailIDs = Set(thumbnailInfos.map(\.windowID))
         windowOrder.removeAll { !thumbnailIDs.contains($0) }
+        let pidByID = Dictionary(uniqueKeysWithValues: thumbnailInfos.map { ($0.windowID, $0.ownerPID) })
         for info in thumbnailInfos where !windowOrder.contains(info.windowID) {
-            windowOrder.append(info.windowID)
+            if let lastSameIdx = windowOrder.lastIndex(where: { pidByID[$0] == info.ownerPID }) {
+                windowOrder.insert(info.windowID, at: lastSameIdx + 1)
+            } else {
+                windowOrder.append(info.windowID)
+            }
         }
 
         // Build metrics in stable order.
@@ -1219,5 +1407,147 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         AccessibilityManager.shared.setWindowFrame(windowID: windowID, cgFrame: target)
+    }
+
+    // MARK: - Diagnostics
+
+    /// Starts the 30-second diagnostic heartbeat. Safe to call more than once.
+    private func startDiagnosticTimer() {
+        diagnosticTimer?.invalidate()
+        let t = Timer(timeInterval: 30.0, repeats: true) { [weak self] _ in
+            self?.logDiagnosticHeartbeat()
+        }
+        // Add to common modes so it continues to fire during modal UI / menu tracking.
+        RunLoop.main.add(t, forMode: .common)
+        diagnosticTimer = t
+    }
+
+    /// Compact one-line state summary. Goes to os.log every 30s so we have a
+    /// historical trail leading up to any reported bug.
+    private func logDiagnosticHeartbeat() {
+        let vd = VirtualDisplayManager.shared
+        let screenCount = NSScreen.screens.count
+        let mainID = CGMainDisplayID()
+        let vdID = vd.displayID
+        let mainWIDStr = currentMainWindowID.map(String.init) ?? "nil"
+        let active = isActive ? "1" : "0"
+        logger.warning("heartbeat active=\(active, privacy: .public) screens=\(screenCount, privacy: .public) cg_main=\(mainID, privacy: .public) vd_id=\(vdID, privacy: .public) vd_on=\(vd.isActive, privacy: .public) main_wid=\(mainWIDStr, privacy: .public) parked=\(self.parkedWindows.count, privacy: .public) overlays=\(self.overlayControllers.count, privacy: .public)")
+    }
+
+    /// Full multi-line diagnostic snapshot suitable for the user to paste into
+    /// a bug report. Captures everything we can observe about the display
+    /// layout, virtual-display state, and Glance's internal tracking.
+    ///
+    /// Intentionally has no side effects — safe to call at any time.
+    func diagnosticSnapshot() -> String {
+        var lines: [String] = []
+        let df = ISO8601DateFormatter()
+        df.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        lines.append("=== Glance diagnostic snapshot ===")
+        lines.append("time: \(df.string(from: Date()))")
+        lines.append("isActive: \(isActive)")
+        let bundleVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        lines.append("version: \(bundleVersion) (\(build))")
+        lines.append("")
+
+        // NSScreen state
+        lines.append("--- NSScreen.screens (\(NSScreen.screens.count)) ---")
+        for (i, s) in NSScreen.screens.enumerated() {
+            let name = s.localizedName
+            let displayID = (s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) ?? 0
+            let isMain = (s == NSScreen.main) ? " [NSScreen.main]" : ""
+            let isVD = VirtualDisplayManager.shared.isVirtualDisplay(s) ? " [glance virtual]" : ""
+            let f = s.frame
+            let vf = s.visibleFrame
+            lines.append(String(format: "  [%d] id=%u \"%@\"%@%@", i, displayID, name, isMain, isVD))
+            lines.append(String(format: "      frame=(%.0f,%.0f %.0fx%.0f) visible=(%.0f,%.0f %.0fx%.0f) scale=%.2f",
+                                f.origin.x, f.origin.y, f.width, f.height,
+                                vf.origin.x, vf.origin.y, vf.width, vf.height,
+                                s.backingScaleFactor))
+        }
+        lines.append("NSScreen.main: \(NSScreen.main?.localizedName ?? "nil")")
+        lines.append("CGMainDisplayID(): \(CGMainDisplayID())")
+        lines.append("")
+
+        // CG display list — this is independent of AppKit and shows the true
+        // state of the display registry as CoreGraphics sees it.
+        var onlineIDs = [CGDirectDisplayID](repeating: 0, count: 32)
+        var onlineCount: UInt32 = 0
+        CGGetOnlineDisplayList(32, &onlineIDs, &onlineCount)
+        lines.append("--- CG online displays (\(onlineCount)) ---")
+        for i in 0..<Int(onlineCount) {
+            let id = onlineIDs[i]
+            let b = CGDisplayBounds(id)
+            let mode = CGDisplayCopyDisplayMode(id)
+            let pxW = mode?.pixelWidth ?? 0
+            let pxH = mode?.pixelHeight ?? 0
+            var flags: [String] = []
+            if CGDisplayIsActive(id) != 0 { flags.append("active") }
+            if CGDisplayIsAsleep(id) != 0 { flags.append("asleep") }
+            if CGDisplayIsMain(id) != 0 { flags.append("main") }
+            if CGDisplayIsBuiltin(id) != 0 { flags.append("builtin") }
+            if CGDisplayIsInHWMirrorSet(id) != 0 { flags.append("hwMirror") }
+            if CGDisplayIsInMirrorSet(id) != 0 { flags.append("mirror") }
+            let mirrorOf = CGDisplayMirrorsDisplay(id)
+            if mirrorOf != 0 { flags.append("mirrorOf=\(mirrorOf)") }
+            let vendor = CGDisplayVendorNumber(id)
+            let model = CGDisplayModelNumber(id)
+            lines.append(String(format: "  id=%u bounds=(%.0f,%.0f %.0fx%.0f) px=%dx%d vendor=0x%x model=0x%x [%@]",
+                                id, b.origin.x, b.origin.y, b.width, b.height,
+                                pxW, pxH, vendor, model, flags.joined(separator: ",")))
+        }
+        lines.append("")
+
+        // VirtualDisplayManager state
+        let vd = VirtualDisplayManager.shared
+        lines.append("--- VirtualDisplayManager ---")
+        lines.append("isActive: \(vd.isActive)")
+        lines.append("displayID: \(vd.displayID)")
+        lines.append(String(format: "origin: (%.0f, %.0f)", vd.origin.x, vd.origin.y))
+        lines.append(String(format: "size: %.0fx%.0f", vd.size.width, vd.size.height))
+        lines.append("")
+
+        // Glance state
+        lines.append("--- Glance state ---")
+        lines.append("currentMainWindowID: \(currentMainWindowID.map(String.init) ?? "nil")")
+        lines.append("currentMainPID: \(currentMainPID.map(String.init) ?? "nil")")
+        lines.append("pinnedReferenceWindowID: \(pinnedReferenceWindowID.map(String.init) ?? "nil")")
+        lines.append("parkedWindows: \(parkedWindows.count) \(parkedWindows.sorted())")
+        lines.append("knownWindowIDs: \(knownWindowIDs.count)")
+        lines.append("overlayControllers: \(overlayControllers.count)")
+        lines.append("windowOrder: \(windowOrder.count) entries")
+        if let wa = workAreaWindow {
+            let f = wa.frame
+            lines.append(String(format: "workArea: (%.0f,%.0f %.0fx%.0f) visible=\(wa.isVisible)",
+                                f.origin.x, f.origin.y, f.width, f.height))
+        } else {
+            lines.append("workArea: nil")
+        }
+        lines.append("")
+        lines.append("=== end ===")
+
+        return lines.joined(separator: "\n")
+    }
+
+    /// Menu-bar action: copies a full diagnostic snapshot to the clipboard and
+    /// shows a confirmation so the end user knows it worked. End users paste
+    /// the clipboard contents into a bug report.
+    @objc private func copyDiagnostics() {
+        let snapshot = diagnosticSnapshot()
+        // Also log the full snapshot so it lands in Console.app persistently.
+        logger.warning("diagnostic snapshot requested:\n\(snapshot, privacy: .public)")
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(snapshot, forType: .string)
+
+        let alert = NSAlert()
+        alert.messageText = "Diagnostics copied to clipboard"
+        alert.informativeText = "Paste into the bug report. (\(snapshot.count) characters)"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 }
