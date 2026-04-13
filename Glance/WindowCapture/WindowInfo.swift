@@ -21,6 +21,14 @@ final class WindowInfo: Identifiable, Hashable {
     /// The CGWindowLevel / layer. 0 = normal window, >0 = overlay/menu/system.
     var windowLevel: Int = 0
 
+    /// Whether this window is tethered to another same-PID window (sidebar, watermark,
+    /// HUD) and cannot be positioned independently. Tethered windows are excluded from
+    /// thumbnailing, auto-swap, and individual parking — their parent carries them.
+    var isTethered: Bool = false
+    /// Whether tether detection has already run for this window (cached so we don't
+    /// re-probe every refresh cycle).
+    var tetherCheckComplete: Bool = false
+
     /// Whether this window should be treated as a "real" user window
     /// (suitable for thumbnailing/switching), based on AltTab-style classification.
     var isActualWindow: Bool {

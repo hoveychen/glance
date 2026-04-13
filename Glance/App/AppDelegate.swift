@@ -581,6 +581,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if !newInfo.isActualWindow {
                     return true
                 }
+                // Tethered satellites (sidebars, watermarks) follow a parent — never swap.
+                if newInfo.isTethered {
+                    return true
+                }
                 // Same-PID: must be explicitly AXStandardWindow to auto-swap.
                 // Dialogs, unknown/nil subrole, and everything else stays in work area.
                 if let mainPID = currentMainPID, newInfo.ownerPID == mainPID {
@@ -654,6 +658,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Exclude non-actual windows
             if !info.isActualWindow {
                 logger.warning("Thumbnail filter: excluded \(info.ownerName) '\(info.title)' wid=\(info.windowID) reason=notActualWindow level=\(info.windowLevel) subrole=\(info.axSubrole ?? "nil") frame=\(info.frame.width)x\(info.frame.height)")
+                return false
+            }
+            // Exclude tethered satellites — their parent already carries them.
+            if info.isTethered {
+                logger.warning("Thumbnail filter: excluded \(info.ownerName) '\(info.title)' wid=\(info.windowID) reason=tethered")
                 return false
             }
             // Same-PID: only AXStandardWindow gets a thumbnail (not dialogs, popups, etc.)

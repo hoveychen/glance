@@ -354,6 +354,38 @@ final class WindowTracker {
             // windowLevel is already set from CGWindowList layer above
         }
 
+        // Tether detection: identify same-PID satellite windows (sidebars, watermarks,
+        // drawers) that can't be positioned independently. Runs once per window, before
+        // any parking so the window is still at its natural position.
+        // Geometric prior → AX parent / move-test validation.
+        for info in newWindows where !info.tetherCheckComplete && info.isActualWindow {
+            defer { info.tetherCheckComplete = true }
+
+            // Find a larger same-PID window whose frame contains or edge-touches this one.
+            let candidate = newWindows.first { other in
+                guard other.windowID != info.windowID,
+                      other.ownerPID == info.ownerPID,
+                      other.isActualWindow,
+                      other.frame.width * other.frame.height > info.frame.width * info.frame.height
+                else { return false }
+                return Self.isContainedOrAdjacent(info.frame, host: other.frame)
+            }
+            guard candidate != nil else { continue }
+
+            // Validate via AX parent (cheap, no side effects) then move-test as fallback.
+            let parentIsWindow = axMgr.hasWindowParent(pid: info.ownerPID, windowID: info.windowID)
+            let tethered: Bool
+            if parentIsWindow {
+                tethered = true
+            } else {
+                tethered = axMgr.probeWindowTethered(pid: info.ownerPID, windowID: info.windowID)
+            }
+            if tethered {
+                info.isTethered = true
+                logger.warning("Tether detected: \(info.displayName) wid=\(info.windowID) parent=\(candidate!.displayName) via=\(parentIsWindow ? "AXParent" : "moveTest", privacy: .public)")
+            }
+        }
+
         // Set up AX observers for any new PIDs we haven't subscribed to yet
         for pid in seenPIDs {
             if !observedPIDs.contains(pid) {
@@ -373,8 +405,9 @@ final class WindowTracker {
         // Don't reset to first window if current main temporarily disappears
         // (it might be in transit between work area and virtual display).
         if mainWindowID == nil {
-            // Prefer isActualWindow windows for initial selection
-            mainWindowID = windows.first(where: { $0.isActualWindow })?.windowID
+            // Prefer isActualWindow windows for initial selection; never pick a tethered satellite.
+            mainWindowID = windows.first(where: { $0.isActualWindow && !$0.isTethered })?.windowID
+                ?? windows.first(where: { $0.isActualWindow })?.windowID
                 ?? windows.first?.windowID
         }
 
@@ -383,6 +416,27 @@ final class WindowTracker {
 
     private func notifyUpdate() {
         onWindowsUpdated?(windows, mainWindowID)
+    }
+
+    // MARK: - Geometry
+
+    /// Whether `inner` is fully contained in `host` (watermark case) or flush against
+    /// one of `host`'s edges with its perpendicular extent within host (sidebar/drawer case).
+    private static func isContainedOrAdjacent(_ inner: CGRect, host: CGRect, tolerance: CGFloat = 6) -> Bool {
+        // Fully contained: inner ⊂ host (with a bit of slop).
+        let hostPadded = host.insetBy(dx: -tolerance, dy: -tolerance)
+        if hostPadded.contains(inner) {
+            return true
+        }
+        // Edge-adjacent: one of inner's edges touches host's opposite edge, and inner
+        // lies within host's span along the perpendicular axis.
+        let yOverlap = inner.minY >= host.minY - tolerance && inner.maxY <= host.maxY + tolerance
+        let xOverlap = inner.minX >= host.minX - tolerance && inner.maxX <= host.maxX + tolerance
+        if yOverlap && abs(inner.minX - host.maxX) < tolerance { return true } // right edge
+        if yOverlap && abs(inner.maxX - host.minX) < tolerance { return true } // left edge
+        if xOverlap && abs(inner.minY - host.maxY) < tolerance { return true } // bottom edge
+        if xOverlap && abs(inner.maxY - host.minY) < tolerance { return true } // top edge
+        return false
     }
 
     // MARK: - System Window Filter
