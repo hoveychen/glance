@@ -354,36 +354,53 @@ final class WindowTracker {
             // windowLevel is already set from CGWindowList layer above
         }
 
-        // Tether detection: identify same-PID satellite windows (sidebars, watermarks,
-        // drawers) that can't be positioned independently. Runs once per window, before
-        // any parking so the window is still at its natural position.
-        // Geometric prior → AX parent / move-test validation.
+        // Tether detection: identify satellite windows (sidebars, watermarks, drawers)
+        // that ride along with a parent window. Runs once per window on first discovery.
+        //
+        // Heuristic: same-PID + geometric containment/edge-touch +
+        //            (non-AXStandardWindow subrole  OR  area < 20% of host).
+        //
+        // Why not move-test: Qt/Electron sidebars re-apply their position asynchronously,
+        // so an immediate setPosition+read lies to us. Same-PID + subrole/size is a
+        // clean signal with no side effects. The "both standard and similar size" case
+        // (e.g. two stacked VS Code editors) is explicitly rejected to avoid false
+        // positives.
         for info in newWindows where !info.tetherCheckComplete && info.isActualWindow {
             defer { info.tetherCheckComplete = true }
 
-            // Find a larger same-PID window whose frame contains or edge-touches this one.
-            let candidate = newWindows.first { other in
+            let f = info.frame
+            let selfArea = f.width * f.height
+
+            // Same-PID sibling, at least as large as us, that contains or edge-touches us.
+            // When areas are equal (watermark overlaid on main with identical frame),
+            // the tie-break is subrole: host must be AXStandardWindow and we must not be,
+            // otherwise we'd pair two identical real windows as satellite of each other.
+            let host = newWindows.first { other in
                 guard other.windowID != info.windowID,
                       other.ownerPID == info.ownerPID,
-                      other.isActualWindow,
-                      other.frame.width * other.frame.height > info.frame.width * info.frame.height
+                      other.isActualWindow
                 else { return false }
-                return Self.isContainedOrAdjacent(info.frame, host: other.frame)
+                let otherArea = other.frame.width * other.frame.height
+                if otherArea < selfArea { return false }
+                if otherArea == selfArea {
+                    guard other.axSubrole == "AXStandardWindow",
+                          info.axSubrole != "AXStandardWindow"
+                    else { return false }
+                }
+                return Self.isContainedOrAdjacent(f, host: other.frame)
             }
-            guard candidate != nil else { continue }
+            guard let host else { continue }
+            let hostArea = host.frame.width * host.frame.height
 
-            // Validate via AX parent (cheap, no side effects) then move-test as fallback.
-            let parentIsWindow = axMgr.hasWindowParent(pid: info.ownerPID, windowID: info.windowID)
-            let tethered: Bool
-            if parentIsWindow {
-                tethered = true
-            } else {
-                tethered = axMgr.probeWindowTethered(pid: info.ownerPID, windowID: info.windowID)
+            let nonStandardSub = (info.axSubrole ?? "") != "AXStandardWindow"
+            let muchSmaller = selfArea < hostArea * 0.2
+            guard nonStandardSub || muchSmaller else {
+                logger.warning("TetherCheck: wid=\(info.windowID, privacy: .public) host wid=\(host.windowID, privacy: .public) skipped (both AXStandardWindow, ratio=\(selfArea / hostArea, privacy: .public))")
+                continue
             }
-            if tethered {
-                info.isTethered = true
-                logger.warning("Tether detected: \(info.displayName) wid=\(info.windowID) parent=\(candidate!.displayName) via=\(parentIsWindow ? "AXParent" : "moveTest", privacy: .public)")
-            }
+
+            info.isTethered = true
+            logger.warning("Tether detected: wid=\(info.windowID, privacy: .public) pid=\(info.ownerPID, privacy: .public) owner=\(info.ownerName, privacy: .public) subrole=\(info.axSubrole ?? "nil", privacy: .public) host=\(host.windowID, privacy: .public) nonStd=\(nonStandardSub, privacy: .public) small=\(muchSmaller, privacy: .public)")
         }
 
         // Set up AX observers for any new PIDs we haven't subscribed to yet

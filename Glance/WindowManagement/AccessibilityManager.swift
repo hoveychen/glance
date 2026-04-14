@@ -159,50 +159,6 @@ final class AccessibilityManager {
         return (getRole(for: axWin), getSubrole(for: axWin))
     }
 
-    // MARK: - Tether Detection
-
-    /// Whether the AX parent of this window is another window (not an AXApplication).
-    /// A window-typed parent is a strong signal that this element is a child/satellite
-    /// of another window (e.g. an attached drawer or panel).
-    func hasWindowParent(pid: pid_t, windowID: CGWindowID) -> Bool {
-        guard let axWin = findAXWindowByID(windowID, pid: pid) else { return false }
-        var ref: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(axWin, kAXParentAttribute as CFString, &ref) == .success,
-              let parentRef = ref,
-              CFGetTypeID(parentRef) == AXUIElementGetTypeID() else { return false }
-        let parent = parentRef as! AXUIElement
-        let parentRole = getRole(for: parent)
-        return parentRole == "AXWindow"
-    }
-
-    /// Move-test: nudge the window a few pixels and check whether it actually moved.
-    /// A window that refuses to budge (position snaps back, or AX set ignored) is
-    /// tethered. Restores the original position on success so independent windows
-    /// experience at most a single-frame jitter.
-    func probeWindowTethered(pid: pid_t, windowID: CGWindowID) -> Bool {
-        guard let axWin = findAXWindowByID(windowID, pid: pid) else { return false }
-        guard let before = getAXPosition(axWin) else { return false }
-
-        var target = CGPoint(x: before.x + 3, y: before.y)
-        guard let targetVal = AXValueCreate(.cgPoint, &target) else { return false }
-        AXUIElementSetAttributeValue(axWin, kAXPositionAttribute as CFString, targetVal)
-
-        guard let after = getAXPosition(axWin) else { return false }
-        let movedX = abs(after.x - before.x)
-
-        if movedX < 1.0 {
-            logger.warning("probeWindowTethered: wid=\(windowID) did not budge (before=\(before.x), after=\(after.x)) → tethered")
-            return true
-        }
-
-        // Independent window — restore original position.
-        var restore = before
-        if let restoreVal = AXValueCreate(.cgPoint, &restore) {
-            AXUIElementSetAttributeValue(axWin, kAXPositionAttribute as CFString, restoreVal)
-        }
-        return false
-    }
-
     // MARK: - Window Activation
 
     func activateWindow(pid: pid_t, windowID: CGWindowID? = nil, windowTitle: String?) {
