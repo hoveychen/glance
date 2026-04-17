@@ -55,14 +55,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Windows manually dragged to a specific screen — exempt from capacity capping.
     private var manualScreenAssignment: Set<CGWindowID> = []
 
-    /// Pinned reference window ID displayed alongside the main window.
-    private var pinnedReferenceWindowID: CGWindowID?
+    /// Pinned left reference window (optional, appears on the left of main).
+    private var pinnedLeftReferenceWindowID: CGWindowID?
+    private var pinnedLeftReferencePID: pid_t?
 
-    /// PID of the pinned reference window's app.
-    private var pinnedReferencePID: pid_t?
+    /// Pinned right reference window (optional, appears on the right of main).
+    private var pinnedRightReferenceWindowID: CGWindowID?
+    private var pinnedRightReferencePID: pid_t?
 
-    /// Convenience accessor for the work area's current split ratio.
-    private var splitRatio: CGFloat { workAreaWindow?.splitRatio ?? 0.6 }
+    /// Returns true if this window is pinned as either left or right reference.
+    private func isPinnedReference(_ id: CGWindowID) -> Bool {
+        id == pinnedLeftReferenceWindowID || id == pinnedRightReferenceWindowID
+    }
 
     /// The frosted-glass work area.
     private var workAreaWindow: WorkAreaWindow?
@@ -387,10 +391,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let wa = WorkAreaWindow(frame: waFrame)
+        // Restore saved split ratios (fall back to defaults baked into WorkAreaWindow).
+        let defaults = UserDefaults.standard
+        let savedLeft = defaults.object(forKey: "workAreaLeftSplitRatio") as? Double
+        let savedRight = defaults.object(forKey: "workAreaRightSplitRatio") as? Double
+        if savedLeft != nil || savedRight != nil {
+            wa.setSplitRatios(
+                left: CGFloat(savedLeft ?? Double(wa.leftSplitRatio)),
+                right: CGFloat(savedRight ?? Double(wa.rightSplitRatio))
+            )
+        }
         wa.onExit = { [weak self] in self?.quitApp() }
         wa.onQuickSwitch = { [weak self] in self?.toggleHintMode() }
-        wa.onUnpinReference = { [weak self] in self?.unpinReference() }
-        wa.onSplitRatioChanged = { [weak self] _ in self?.repositionSplitWindows() }
+        wa.onUnpinLeftReference = { [weak self] in self?.unpinReference(side: .left) }
+        wa.onUnpinRightReference = { [weak self] in self?.unpinReference(side: .right) }
+        wa.onSplitRatioChanged = { [weak self] in
+            guard let self, let wa = self.workAreaWindow else { return }
+            UserDefaults.standard.set(Double(wa.leftSplitRatio), forKey: "workAreaLeftSplitRatio")
+            UserDefaults.standard.set(Double(wa.rightSplitRatio), forKey: "workAreaRightSplitRatio")
+            self.repositionSplitWindows()
+        }
         wa.orderFrontRegardless()
         workAreaWindow = wa
 
@@ -423,13 +443,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(NSStringFromRect(wa.frame), forKey: "workAreaFrame")
         }
 
-        // Restore pinned reference window (it's in work area, not virtual display)
-        if let refID = pinnedReferenceWindowID, let refPID = pinnedReferencePID {
-            AccessibilityManager.shared.parkReferenceWindow(windowID: refID, pid: refPID)
-            AccessibilityManager.shared.moveFromVirtualDisplay(windowID: refID, pid: refPID)
+        // Restore pinned reference windows (they're in work area, not virtual display)
+        for (refID, refPID) in [
+            (pinnedLeftReferenceWindowID, pinnedLeftReferencePID),
+            (pinnedRightReferenceWindowID, pinnedRightReferencePID),
+        ] {
+            if let refID, let refPID {
+                AccessibilityManager.shared.parkReferenceWindow(windowID: refID, pid: refPID)
+                AccessibilityManager.shared.moveFromVirtualDisplay(windowID: refID, pid: refPID)
+            }
         }
-        pinnedReferenceWindowID = nil
-        pinnedReferencePID = nil
+        pinnedLeftReferenceWindowID = nil
+        pinnedLeftReferencePID = nil
+        pinnedRightReferenceWindowID = nil
+        pinnedRightReferencePID = nil
 
         // Restore main window (it's in work area, not virtual display) to original position
         if let mainID = currentMainWindowID,
@@ -489,12 +516,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.onThumbnailDragSpringLoad = { [weak self] windowID in
                 self?.handleDragSpringLoad(windowID: windowID)
             }
-            controller.onThumbnailPinClicked = { [weak self] windowInfo in
+            controller.onThumbnailPinClicked = { [weak self] windowInfo, side in
                 guard let self else { return }
-                if windowInfo.windowID == self.pinnedReferenceWindowID {
-                    self.unpinReference()
+                // Clicking the directional pin on an already-pinned-that-side window = unpin.
+                if side == .left && windowInfo.windowID == self.pinnedLeftReferenceWindowID {
+                    self.unpinReference(side: .left)
+                } else if side == .right && windowInfo.windowID == self.pinnedRightReferenceWindowID {
+                    self.unpinReference(side: .right)
                 } else {
-                    self.pinAsReference(windowInfo)
+                    self.pinAsReference(windowInfo, side: side == .left ? .left : .right)
                 }
             }
             overlayControllers[idx] = controller
@@ -522,29 +552,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Use the padded interior for window placement/constraining
         let usableArea = wa.usableCGFrame
-        // When a reference is pinned, the main window uses only the left panel
-        let mainArea = pinnedReferenceWindowID != nil
-            ? wa.mainPanelCGFrame(splitRatio: splitRatio)
-            : usableArea
+        // When any reference is pinned, the main window uses only the middle panel.
+        let mainArea = wa.mainPanelCGFrame()
         // Use the full frame for layout engine (excluded rect)
         let fullAreaAppKit = wa.appKitFrame
 
         // Detect newly appeared / disappeared windows
         let currentIDs = Set(windows.map(\.windowID))
-        let parkedIDs = parkedWindows  // parked windows won't appear in currentIDs
-        // Include pinned reference in allKnownNow so it isn't treated as disappeared
+        let parkedIDs = parkedWindows
         var allKnownNow = currentIDs.union(parkedIDs)
-        if let refID = pinnedReferenceWindowID { allKnownNow.insert(refID) }
+        if let refID = pinnedLeftReferenceWindowID { allKnownNow.insert(refID) }
+        if let refID = pinnedRightReferenceWindowID { allKnownNow.insert(refID) }
         let newWindowIDs = currentIDs.subtracting(knownWindowIDs)
         knownWindowIDs = currentIDs
 
-        // If the pinned reference window was closed, auto-unpin
-        if let refID = pinnedReferenceWindowID, !currentIDs.contains(refID) && !parkedIDs.contains(refID) {
-            logger.warning("Pinned reference window \(refID) disappeared, unpinning")
-            pinnedReferenceWindowID = nil
-            pinnedReferencePID = nil
+        // If a pinned reference window was closed, auto-unpin the corresponding side.
+        if let refID = pinnedLeftReferenceWindowID, !currentIDs.contains(refID) && !parkedIDs.contains(refID) {
+            logger.warning("Pinned left reference window \(refID) disappeared, unpinning")
+            pinnedLeftReferenceWindowID = nil
+            pinnedLeftReferencePID = nil
             AccessibilityManager.shared.clearReference(refID)
-            wa.referenceActive = false
+            wa.leftReferenceActive = false
+        }
+        if let refID = pinnedRightReferenceWindowID, !currentIDs.contains(refID) && !parkedIDs.contains(refID) {
+            logger.warning("Pinned right reference window \(refID) disappeared, unpinning")
+            pinnedRightReferenceWindowID = nil
+            pinnedRightReferencePID = nil
+            AccessibilityManager.shared.clearReference(refID)
+            wa.rightReferenceActive = false
         }
 
         // If the current main window was closed, pop from the history stack
@@ -574,8 +609,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             effectiveMainID = mainWindowID ?? windows.first?.windowID
         }
         if let newID = newWindowIDs.first(where: { id in
-            // Must not be the current main, must not be already parked, must not be the pinned reference
-            id != effectiveMainID && !parkedWindows.contains(id) && id != pinnedReferenceWindowID
+            // Must not be the current main, must not be already parked, must not be a pinned reference
+            id != effectiveMainID && !parkedWindows.contains(id) && !isPinnedReference(id)
         }), let newInfo = windows.first(where: { $0.windowID == newID }) {
             // Use AX subrole classification to decide whether to auto-swap.
             // Same-PID windows are held to a stricter standard: ONLY AXStandardWindow
@@ -658,9 +693,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Same-PID windows must be AXStandardWindow to get a thumbnail slot.
         // The main window is INCLUDED for layout (placeholder) but not parked.
         let thumbnailInfos = windows.filter { info in
-            // Always include the main window and pinned reference for layout
+            // Always include the main window and pinned references for layout
             if info.windowID == effectiveMainID { return true }
-            if info.windowID == pinnedReferenceWindowID { return true }
+            if isPinnedReference(info.windowID) { return true }
             // Exclude non-actual windows
             if !info.isActualWindow {
                 logger.warning("Thumbnail filter: excluded \(info.ownerName) '\(info.title)' wid=\(info.windowID) reason=notActualWindow level=\(info.windowLevel) subrole=\(info.axSubrole ?? "nil") frame=\(info.frame.width)x\(info.frame.height)")
@@ -733,7 +768,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Self-healing: detect windows marked as parked but actually still on a real screen.
         // This can happen if a prior parkMainWindow call failed silently.
         let vdOriginX = VirtualDisplayManager.shared.origin.x
-        for info in windows where info.windowID != effectiveMainID && info.windowID != pinnedReferenceWindowID {
+        for info in windows where info.windowID != effectiveMainID && !isPinnedReference(info.windowID) {
             if parkedWindows.contains(info.windowID) && info.frame.origin.x < vdOriginX - 100 {
                 logger.warning("Recovery: window \(info.displayName) (\(info.windowID)) marked parked but on real screen, will re-park")
                 parkedWindows.remove(info.windowID)
@@ -743,7 +778,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Park non-main windows to virtual display (skip main and pinned reference — they're in the work area)
         for info in thumbnailInfos {
             if info.windowID == effectiveMainID { continue }
-            if info.windowID == pinnedReferenceWindowID { continue }
+            if isPinnedReference(info.windowID) { continue }
             if !parkedWindows.contains(info.windowID) {
                 let success = AccessibilityManager.shared.moveToVirtualDisplay(
                     windowID: info.windowID,
@@ -806,9 +841,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Fill pinned reference window to its panel each cycle
-        if let refID = pinnedReferenceWindowID, let refPID = pinnedReferencePID {
-            let refArea = wa.referencePanelCGFrame(splitRatio: splitRatio)
+        // Fill pinned reference windows to their panels each cycle
+        if let refID = pinnedLeftReferenceWindowID, let refPID = pinnedLeftReferencePID {
+            let refArea = wa.leftReferencePanelCGFrame()
+            AccessibilityManager.shared.setReferenceFrame(windowID: refID, pid: refPID, cgFrame: refArea)
+        }
+        if let refID = pinnedRightReferenceWindowID, let refPID = pinnedRightReferencePID {
+            let refArea = wa.rightReferencePanelCGFrame()
             AccessibilityManager.shared.setReferenceFrame(windowID: refID, pid: refPID, cgFrame: refArea)
         }
 
@@ -825,7 +864,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let slotsByScreen = Dictionary(grouping: slots, by: \.screenIndex)
         for (screenIdx, controller) in overlayControllers {
             controller.activeWindowID = effectiveMainID
-            controller.pinnedReferenceWindowID = pinnedReferenceWindowID
+            controller.pinnedLeftReferenceWindowID = pinnedLeftReferenceWindowID
+            controller.pinnedRightReferenceWindowID = pinnedRightReferenceWindowID
             controller.updateSlots(slotsByScreen[screenIdx] ?? [], allWindows: thumbnailInfos)
         }
 
@@ -850,8 +890,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Clicking the current main window's placeholder — no-op
         if clickedInfo.windowID == currentMainWindowID { return }
-        // Pinned reference window cannot be swapped into main
-        if clickedInfo.windowID == pinnedReferenceWindowID { return }
+        // Pinned reference windows cannot be swapped into main
+        if isPinnedReference(clickedInfo.windowID) { return }
 
         NotificationCenter.default.post(name: .glanceThumbnailClicked, object: nil)
 
@@ -862,10 +902,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let oldID = oldMainID {
             mainWindowStack.append(oldID)
         }
-        // When a reference is pinned, main uses only the left panel
-        let mainArea = pinnedReferenceWindowID != nil
-            ? wa.mainPanelCGFrame(splitRatio: splitRatio)
-            : wa.usableCGFrame
+        // When any reference is pinned, main uses only the middle panel.
+        let mainArea = wa.mainPanelCGFrame()
 
         // Save current main window's position in work area before parking
         if let oldID = oldMainID {
@@ -933,64 +971,101 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Pin as Reference
 
-    private func pinAsReference(_ windowInfo: WindowInfo) {
+    enum ReferenceSide { case left, right }
+
+    private func pinAsReference(_ windowInfo: WindowInfo, side: ReferenceSide) {
         guard let wa = workAreaWindow else { return }
         // Cannot pin the main window as reference
         if windowInfo.windowID == currentMainWindowID { return }
 
-        // Unpin existing reference first
-        if pinnedReferenceWindowID != nil {
-            unpinReference()
+        // If the target is already pinned on the *other* side, unpin that first
+        // so it doesn't stay in two places.
+        if side == .left, pinnedRightReferenceWindowID == windowInfo.windowID {
+            unpinReference(side: .right)
+        } else if side == .right, pinnedLeftReferenceWindowID == windowInfo.windowID {
+            unpinReference(side: .left)
         }
 
-        let refArea = wa.referencePanelCGFrame(splitRatio: splitRatio)
+        // Unpin whatever's currently on the target side.
+        if side == .left, pinnedLeftReferenceWindowID != nil {
+            unpinReference(side: .left)
+        } else if side == .right, pinnedRightReferenceWindowID != nil {
+            unpinReference(side: .right)
+        }
 
-        // Move from virtual display to reference panel
+        // Activate the side on the work area so the panel geometry updates.
+        switch side {
+        case .left:  wa.leftReferenceActive = true
+        case .right: wa.rightReferenceActive = true
+        }
+
+        let refArea = side == .left ? wa.leftReferencePanelCGFrame() : wa.rightReferencePanelCGFrame()
+
         let success = AccessibilityManager.shared.moveFromVirtualDisplayToReferencePanel(
             windowID: windowInfo.windowID,
             pid: windowInfo.ownerPID,
             referencePanelCG: refArea
         )
         guard success else {
-            logger.warning("pinAsReference: failed to move \(windowInfo.displayName) to reference panel")
+            logger.warning("pinAsReference(\(side == .left ? "left" : "right")): failed to move \(windowInfo.displayName)")
+            // Roll back side activation if it wasn't already active for a different window.
+            switch side {
+            case .left:  if pinnedLeftReferenceWindowID == nil { wa.leftReferenceActive = false }
+            case .right: if pinnedRightReferenceWindowID == nil { wa.rightReferenceActive = false }
+            }
             return
         }
 
         parkedWindows.remove(windowInfo.windowID)
-        pinnedReferenceWindowID = windowInfo.windowID
-        pinnedReferencePID = windowInfo.ownerPID
-        wa.referenceActive = true
+        switch side {
+        case .left:
+            pinnedLeftReferenceWindowID = windowInfo.windowID
+            pinnedLeftReferencePID = windowInfo.ownerPID
+        case .right:
+            pinnedRightReferenceWindowID = windowInfo.windowID
+            pinnedRightReferencePID = windowInfo.ownerPID
+        }
 
-        // Reposition the main window into the left (main) panel
-        let mainArea = wa.mainPanelCGFrame(splitRatio: splitRatio)
+        // Reposition the main window into its (possibly shrunken) middle panel.
+        let mainArea = wa.mainPanelCGFrame()
         if let mainID = currentMainWindowID {
             AccessibilityManager.shared.setWindowFrame(windowID: mainID, cgFrame: mainArea)
         }
 
-        logger.warning("Pinned \(windowInfo.displayName) as reference")
+        logger.warning("Pinned \(windowInfo.displayName) as \(side == .left ? "left" : "right") reference")
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.windowTracker.forceUpdate()
         }
     }
 
-    /// Reposition both main and reference windows after the split ratio changes.
+    /// Reposition main + any pinned references after the split ratio changes.
     private func repositionSplitWindows() {
-        guard let wa = workAreaWindow, pinnedReferenceWindowID != nil else { return }
-        let mainArea = wa.mainPanelCGFrame(splitRatio: splitRatio)
-        let refArea = wa.referencePanelCGFrame(splitRatio: splitRatio)
+        guard let wa = workAreaWindow else { return }
         if let mainID = currentMainWindowID {
-            AccessibilityManager.shared.setWindowFrame(windowID: mainID, cgFrame: mainArea)
+            AccessibilityManager.shared.setWindowFrame(windowID: mainID, cgFrame: wa.mainPanelCGFrame())
         }
-        if let refID = pinnedReferenceWindowID, let refPID = pinnedReferencePID {
-            AccessibilityManager.shared.setReferenceFrame(windowID: refID, pid: refPID, cgFrame: refArea)
+        if let refID = pinnedLeftReferenceWindowID, let refPID = pinnedLeftReferencePID {
+            AccessibilityManager.shared.setReferenceFrame(windowID: refID, pid: refPID, cgFrame: wa.leftReferencePanelCGFrame())
+        }
+        if let refID = pinnedRightReferenceWindowID, let refPID = pinnedRightReferencePID {
+            AccessibilityManager.shared.setReferenceFrame(windowID: refID, pid: refPID, cgFrame: wa.rightReferencePanelCGFrame())
         }
     }
 
-    private func unpinReference() {
-        guard let refID = pinnedReferenceWindowID,
-              let refPID = pinnedReferencePID,
-              let wa = workAreaWindow else { return }
+    private func unpinReference(side: ReferenceSide) {
+        guard let wa = workAreaWindow else { return }
+        let refID: CGWindowID?
+        let refPID: pid_t?
+        switch side {
+        case .left:
+            refID = pinnedLeftReferenceWindowID
+            refPID = pinnedLeftReferencePID
+        case .right:
+            refID = pinnedRightReferenceWindowID
+            refPID = pinnedRightReferencePID
+        }
+        guard let refID, let refPID else { return }
 
         // Park reference window back to virtual display
         let parked = AccessibilityManager.shared.parkReferenceWindow(windowID: refID, pid: refPID)
@@ -998,14 +1073,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             parkedWindows.insert(refID)
         }
 
-        pinnedReferenceWindowID = nil
-        pinnedReferencePID = nil
-        wa.referenceActive = false
+        switch side {
+        case .left:
+            pinnedLeftReferenceWindowID = nil
+            pinnedLeftReferencePID = nil
+            wa.leftReferenceActive = false
+        case .right:
+            pinnedRightReferenceWindowID = nil
+            pinnedRightReferencePID = nil
+            wa.rightReferenceActive = false
+        }
 
-        // Expand main window to full usable area
-        let fullArea = wa.usableCGFrame
+        // Reposition main to its new (possibly expanded) panel.
         if let mainID = currentMainWindowID {
-            AccessibilityManager.shared.setWindowFrame(windowID: mainID, cgFrame: fullArea)
+            AccessibilityManager.shared.setWindowFrame(windowID: mainID, cgFrame: wa.mainPanelCGFrame())
         }
 
         logger.warning("Unpinned reference window")
@@ -1244,17 +1325,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleDragComplete(windowID: CGWindowID) {
         let mouseLocation = NSEvent.mouseLocation  // AppKit coords
 
-        // If dropped on the work area, pin as reference (skip if already pinned or is main)
+        // If dropped on the work area, pin as reference (skip if already pinned or is main).
+        // Side is chosen by which half of the work area the drop landed on.
         if let wa = workAreaWindow, wa.frame.contains(mouseLocation),
            windowID != currentMainWindowID,
-           windowID != pinnedReferenceWindowID {
+           !isPinnedReference(windowID) {
             if let windows = windowTracker.lastKnownWindows,
                let info = windows.first(where: { $0.windowID == windowID }) {
-                // Clear dragging state first
                 for (_, controller) in overlayControllers {
                     controller.draggingWindowID = nil
                 }
-                pinAsReference(info)
+                let side: ReferenceSide = mouseLocation.x < wa.frame.midX ? .left : .right
+                pinAsReference(info, side: side)
                 return
             }
         }
@@ -1443,7 +1525,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            let info = windows.first(where: { $0.windowID == windowID }) {
             if isHintPinMode {
                 exitHintMode()
-                pinAsReference(info)
+                // Hint-pin defaults to right side (matches prior single-side behavior).
+                pinAsReference(info, side: .right)
             } else {
                 exitHintMode()
                 handleThumbnailClick(info)
@@ -1610,7 +1693,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lines.append("--- Glance state ---")
         lines.append("currentMainWindowID: \(currentMainWindowID.map(String.init) ?? "nil")")
         lines.append("currentMainPID: \(currentMainPID.map(String.init) ?? "nil")")
-        lines.append("pinnedReferenceWindowID: \(pinnedReferenceWindowID.map(String.init) ?? "nil")")
+        lines.append("pinnedLeftReferenceWindowID: \(pinnedLeftReferenceWindowID.map(String.init) ?? "nil")")
+        lines.append("pinnedRightReferenceWindowID: \(pinnedRightReferenceWindowID.map(String.init) ?? "nil")")
         lines.append("parkedWindows: \(parkedWindows.count) \(parkedWindows.sorted())")
         lines.append("knownWindowIDs: \(knownWindowIDs.count)")
         lines.append("overlayControllers: \(overlayControllers.count)")

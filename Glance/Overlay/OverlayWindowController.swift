@@ -11,8 +11,8 @@ final class OverlayWindowController {
     var onThumbnailHoverEnd: ((CGWindowID) -> Void)?
     /// External file/text drag hovered long enough to trigger spring-loading.
     var onThumbnailDragSpringLoad: ((CGWindowID) -> Void)?
-    /// Pin button clicked on a thumbnail.
-    var onThumbnailPinClicked: ((WindowInfo) -> Void)?
+    /// Pin button clicked on a thumbnail — with the side the user chose.
+    var onThumbnailPinClicked: ((WindowInfo, ThumbnailView.PinnedSide) -> Void)?
 
     /// Window being dragged — skip animating it during layout updates.
     var draggingWindowID: CGWindowID?
@@ -26,12 +26,25 @@ final class OverlayWindowController {
         }
     }
 
-    /// The pinned reference window ID — its thumbnail gets the pinned overlay.
-    var pinnedReferenceWindowID: CGWindowID? {
-        didSet {
-            for (id, window) in thumbnailWindows {
-                window.isPinnedReference = (id == pinnedReferenceWindowID)
-            }
+    /// Pinned left reference window ID — its thumbnail gets the "pinned left" overlay.
+    var pinnedLeftReferenceWindowID: CGWindowID? {
+        didSet { refreshPinnedSides() }
+    }
+
+    /// Pinned right reference window ID — its thumbnail gets the "pinned right" overlay.
+    var pinnedRightReferenceWindowID: CGWindowID? {
+        didSet { refreshPinnedSides() }
+    }
+
+    private func pinnedSide(for id: CGWindowID) -> ThumbnailView.PinnedSide {
+        if id == pinnedLeftReferenceWindowID { return .left }
+        if id == pinnedRightReferenceWindowID { return .right }
+        return .none
+    }
+
+    private func refreshPinnedSides() {
+        for (id, window) in thumbnailWindows {
+            window.pinnedSide = pinnedSide(for: id)
         }
     }
 
@@ -63,7 +76,7 @@ final class OverlayWindowController {
             if let existingWindow = thumbnailWindows[slot.windowID] {
                 existingWindow.updateWindowInfo(info)
                 existingWindow.isActiveWindow = (slot.windowID == activeWindowID)
-                existingWindow.isPinnedReference = (slot.windowID == pinnedReferenceWindowID)
+                existingWindow.pinnedSide = pinnedSide(for: slot.windowID)
                 // Don't animate the window being dragged — user controls its position
                 if slot.windowID != draggingWindowID {
                     existingWindow.animateTo(frame: slot.rect)
@@ -71,7 +84,7 @@ final class OverlayWindowController {
             } else {
                 let thumbWindow = ThumbnailWindow(windowInfo: info, frame: slot.rect)
                 thumbWindow.isActiveWindow = (slot.windowID == activeWindowID)
-                thumbWindow.isPinnedReference = (slot.windowID == pinnedReferenceWindowID)
+                thumbWindow.pinnedSide = pinnedSide(for: slot.windowID)
                 thumbWindow.onClick = { [weak self] clickedInfo in
                     self?.onThumbnailClicked?(clickedInfo)
                 }
@@ -90,8 +103,8 @@ final class OverlayWindowController {
                 thumbWindow.onDragSpringLoad = { [weak self] windowID in
                     self?.onThumbnailDragSpringLoad?(windowID)
                 }
-                thumbWindow.onPinClicked = { [weak self] windowInfo in
-                    self?.onThumbnailPinClicked?(windowInfo)
+                thumbWindow.onPinClicked = { [weak self] windowInfo, side in
+                    self?.onThumbnailPinClicked?(windowInfo, side)
                 }
                 thumbWindow.orderFrontRegardless()
                 thumbnailWindows[slot.windowID] = thumbWindow

@@ -2,7 +2,8 @@ import AppKit
 
 // MARK: - Split Divider View
 
-/// A thin draggable divider handle between the main and reference panels.
+/// A draggable divider handle between panels. The hit area is wide for easy
+/// grabbing; the visible line is a thin 2px stripe centered inside.
 private final class SplitDividerView: NSView {
 
     var onDrag: ((CGFloat) -> Void)?  // reports delta-x in points
@@ -26,7 +27,6 @@ private final class SplitDividerView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        // Subtle vertical line
         NSColor.white.withAlphaComponent(0.2).setFill()
         let lineW: CGFloat = 2
         let lineRect = CGRect(x: (bounds.width - lineW) / 2, y: 4,
@@ -40,9 +40,10 @@ final class WorkAreaWindow: NSWindow {
 
     var onExit: (() -> Void)?
     var onQuickSwitch: (() -> Void)?
-    var onUnpinReference: (() -> Void)?
-    /// Called when the user drags the split divider. Parameter is the new split ratio.
-    var onSplitRatioChanged: ((CGFloat) -> Void)?
+    var onUnpinLeftReference: (() -> Void)?
+    var onUnpinRightReference: (() -> Void)?
+    /// Called when either split divider is dragged.
+    var onSplitRatioChanged: (() -> Void)?
 
     init(frame: CGRect) {
         super.init(
@@ -54,12 +55,11 @@ final class WorkAreaWindow: NSWindow {
 
         isOpaque = false
         backgroundColor = .clear
-        level = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue - 1)  // Below all normal windows
+        level = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue - 1)
         hasShadow = true
         isMovableByWindowBackground = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
-        // Frosted glass effect
         let effectView = NSVisualEffectView(frame: contentView!.bounds)
         effectView.material = .hudWindow
         effectView.blendingMode = .behindWindow
@@ -72,7 +72,6 @@ final class WorkAreaWindow: NSWindow {
         effectView.autoresizingMask = [.width, .height]
         contentView?.addSubview(effectView)
 
-        // Subtle label
         let label = NSTextField(labelWithString: "Work Area")
         label.font = .systemFont(ofSize: 11, weight: .medium)
         label.textColor = NSColor.white.withAlphaComponent(0.3)
@@ -84,7 +83,6 @@ final class WorkAreaWindow: NSWindow {
             label.bottomAnchor.constraint(equalTo: effectView.bottomAnchor, constant: -8)
         ])
 
-        // Exit button in bottom-left
         let exitButton = NSButton(title: "✕ Exit", target: self, action: #selector(exitClicked))
         exitButton.bezelStyle = .recessed
         exitButton.isBordered = false
@@ -97,7 +95,20 @@ final class WorkAreaWindow: NSWindow {
             exitButton.bottomAnchor.constraint(equalTo: effectView.bottomAnchor, constant: -6)
         ])
 
-        // Quick-switch button in bottom-right
+        // Unpin-left button (hidden by default) — bottom-left, next to Exit
+        unpinLeftButton = NSButton(title: "✕ Unpin Left", target: self, action: #selector(unpinLeftClicked))
+        unpinLeftButton.bezelStyle = .recessed
+        unpinLeftButton.isBordered = false
+        unpinLeftButton.font = .systemFont(ofSize: 11, weight: .medium)
+        unpinLeftButton.contentTintColor = NSColor.white.withAlphaComponent(0.5)
+        unpinLeftButton.translatesAutoresizingMaskIntoConstraints = false
+        unpinLeftButton.isHidden = true
+        effectView.addSubview(unpinLeftButton)
+        NSLayoutConstraint.activate([
+            unpinLeftButton.leadingAnchor.constraint(equalTo: exitButton.trailingAnchor, constant: 12),
+            unpinLeftButton.bottomAnchor.constraint(equalTo: effectView.bottomAnchor, constant: -6)
+        ])
+
         let switchButton = NSButton(title: "⇥ Switch (⌥)", target: self, action: #selector(switchClicked))
         switchButton.bezelStyle = .recessed
         switchButton.isBordered = false
@@ -110,27 +121,35 @@ final class WorkAreaWindow: NSWindow {
             switchButton.bottomAnchor.constraint(equalTo: effectView.bottomAnchor, constant: -6)
         ])
 
-        // Unpin reference button (hidden by default)
-        unpinButton = NSButton(title: "✕ Unpin Ref", target: self, action: #selector(unpinClicked))
-        unpinButton.bezelStyle = .recessed
-        unpinButton.isBordered = false
-        unpinButton.font = .systemFont(ofSize: 11, weight: .medium)
-        unpinButton.contentTintColor = NSColor.white.withAlphaComponent(0.5)
-        unpinButton.translatesAutoresizingMaskIntoConstraints = false
-        unpinButton.isHidden = true
-        effectView.addSubview(unpinButton)
+        // Unpin-right button (hidden by default) — bottom-right, left of Switch
+        unpinRightButton = NSButton(title: "✕ Unpin Right", target: self, action: #selector(unpinRightClicked))
+        unpinRightButton.bezelStyle = .recessed
+        unpinRightButton.isBordered = false
+        unpinRightButton.font = .systemFont(ofSize: 11, weight: .medium)
+        unpinRightButton.contentTintColor = NSColor.white.withAlphaComponent(0.5)
+        unpinRightButton.translatesAutoresizingMaskIntoConstraints = false
+        unpinRightButton.isHidden = true
+        effectView.addSubview(unpinRightButton)
         NSLayoutConstraint.activate([
-            unpinButton.trailingAnchor.constraint(equalTo: switchButton.leadingAnchor, constant: -12),
-            unpinButton.bottomAnchor.constraint(equalTo: effectView.bottomAnchor, constant: -6)
+            unpinRightButton.trailingAnchor.constraint(equalTo: switchButton.leadingAnchor, constant: -12),
+            unpinRightButton.bottomAnchor.constraint(equalTo: effectView.bottomAnchor, constant: -6)
         ])
 
-        // Split divider (hidden by default)
-        dividerView = SplitDividerView()
-        dividerView.isHidden = true
-        dividerView.onDrag = { [weak self] deltaX in
-            self?.handleDividerDrag(deltaX: deltaX)
+        // Left divider (hidden by default)
+        leftDividerView = SplitDividerView()
+        leftDividerView.isHidden = true
+        leftDividerView.onDrag = { [weak self] deltaX in
+            self?.handleLeftDividerDrag(deltaX: deltaX)
         }
-        effectView.addSubview(dividerView)
+        effectView.addSubview(leftDividerView)
+
+        // Right divider (hidden by default)
+        rightDividerView = SplitDividerView()
+        rightDividerView.isHidden = true
+        rightDividerView.onDrag = { [weak self] deltaX in
+            self?.handleRightDividerDrag(deltaX: deltaX)
+        }
+        effectView.addSubview(rightDividerView)
 
         minSize = NSSize(width: 400, height: 300)
         self.delegate = self
@@ -138,7 +157,6 @@ final class WorkAreaWindow: NSWindow {
 
     // Re-entrancy guard for the delegate clamp path.
     private var isReclamping = false
-    // Debounce timer so we only clamp once the user stops dragging/resizing.
     private var settleTimer: Timer?
     private static let settleInterval: TimeInterval = 0.15
 
@@ -160,52 +178,72 @@ final class WorkAreaWindow: NSWindow {
         isReclamping = false
     }
 
-    private var unpinButton: NSButton!
-    private var dividerView: SplitDividerView!
+    private var unpinLeftButton: NSButton!
+    private var unpinRightButton: NSButton!
+    private var leftDividerView: SplitDividerView!
+    private var rightDividerView: SplitDividerView!
 
-    /// The current split ratio (fraction of usable width for the main window).
-    /// Clamped to [0.3, 0.8] to prevent either panel from becoming too small.
-    var splitRatio: CGFloat = 0.6
+    /// Fraction of the available (gap-subtracted) width allocated to the left reference panel.
+    /// Only used when `leftReferenceActive == true`. Clamped in `clampRatios()`.
+    private(set) var leftSplitRatio: CGFloat = 0.25
 
-    /// Whether a reference window is currently pinned.
-    var referenceActive: Bool = false {
+    /// Fraction of the available width allocated to the right reference panel.
+    /// Only used when `rightReferenceActive == true`.
+    private(set) var rightSplitRatio: CGFloat = 0.3
+
+    /// Set both split ratios at once (e.g. when restoring from UserDefaults).
+    /// Values are clamped to the allowed range.
+    func setSplitRatios(left: CGFloat, right: CGFloat) {
+        leftSplitRatio = left
+        rightSplitRatio = right
+        clampRatios()
+        updateDividerPositions()
+    }
+
+    var leftReferenceActive: Bool = false {
         didSet {
-            unpinButton.isHidden = !referenceActive
-            dividerView.isHidden = !referenceActive
-            if referenceActive {
-                updateDividerPosition()
-            }
+            unpinLeftButton.isHidden = !leftReferenceActive
+            leftDividerView.isHidden = !leftReferenceActive
+            clampRatios()
+            updateDividerPositions()
         }
     }
 
-    @objc private func exitClicked() {
-        onExit?()
+    var rightReferenceActive: Bool = false {
+        didSet {
+            unpinRightButton.isHidden = !rightReferenceActive
+            rightDividerView.isHidden = !rightReferenceActive
+            clampRatios()
+            updateDividerPositions()
+        }
     }
 
-    @objc private func unpinClicked() {
-        onUnpinReference?()
-    }
+    @objc private func exitClicked() { onExit?() }
+    @objc private func unpinLeftClicked() { onUnpinLeftReference?() }
+    @objc private func unpinRightClicked() { onUnpinRightReference?() }
+    @objc private func switchClicked() { onQuickSwitch?() }
 
-    @objc private func switchClicked() {
-        onQuickSwitch?()
-    }
-
-    // Allow becoming key so it can be resized, but not main
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
-    /// Padding inside the work area where the main window should not cover.
+    /// Padding inside the work area where windows should not cover.
     static let paddingTop: CGFloat = 8
     static let paddingLeft: CGFloat = 8
     static let paddingRight: CGFloat = 8
-    static let paddingBottom: CGFloat = 28  // Room for "Work Area" label
+    static let paddingBottom: CGFloat = 28
+
+    /// Width of the gap between panels (also the divider hit area width).
+    /// The visible divider line is a 2px stripe drawn centered inside.
+    static let splitGap: CGFloat = 20
+
+    /// Minimum/maximum fraction of available width for a single reference panel.
+    private static let minRefRatio: CGFloat = 0.15
+    private static let maxRefRatio: CGFloat = 0.5
+    /// Main must keep at least this fraction of available width.
+    private static let minMainRatio: CGFloat = 0.3
 
     /// The full frame in CG coordinates (top-left origin).
     var cgFrame: CGRect {
-        // Must use primary screen height for CG↔AppKit conversion (both coordinate
-        // systems are anchored to the primary screen). NSScreen.main returns the
-        // screen with keyboard focus, which is wrong when the work area is on a
-        // secondary display.
         let primaryH = NSScreen.screens.first?.frame.height ?? 0
         return CGRect(
             x: frame.origin.x,
@@ -226,49 +264,99 @@ final class WorkAreaWindow: NSWindow {
         )
     }
 
-    /// The frame in AppKit coordinates (bottom-left origin).
     var appKitFrame: CGRect { frame }
 
-    // MARK: - Split Divider
+    // MARK: - Split Layout
 
-    private func handleDividerDrag(deltaX: CGFloat) {
-        let usableW = frame.width - Self.paddingLeft - Self.paddingRight
-        guard usableW > 0 else { return }
-        let ratioDelta = deltaX / usableW
-        splitRatio = min(0.8, max(0.3, splitRatio + ratioDelta))
-        updateDividerPosition()
-        onSplitRatioChanged?(splitRatio)
+    /// Number of gaps reserved based on which reference sides are active.
+    private var activeGapCount: Int {
+        (leftReferenceActive ? 1 : 0) + (rightReferenceActive ? 1 : 0)
     }
 
-    private func updateDividerPosition() {
+    /// Width available for the three panels themselves (gaps excluded), in usable-interior space.
+    private func availablePanelWidth(usableWidth: CGFloat) -> CGFloat {
+        max(0, usableWidth - CGFloat(activeGapCount) * Self.splitGap)
+    }
+
+    /// Keep both ratios within bounds and ensure main has enough room.
+    private func clampRatios() {
+        if leftReferenceActive {
+            leftSplitRatio = min(Self.maxRefRatio, max(Self.minRefRatio, leftSplitRatio))
+        }
+        if rightReferenceActive {
+            rightSplitRatio = min(Self.maxRefRatio, max(Self.minRefRatio, rightSplitRatio))
+        }
+        let left = leftReferenceActive ? leftSplitRatio : 0
+        let right = rightReferenceActive ? rightSplitRatio : 0
+        let mainShare = 1 - left - right
+        if mainShare < Self.minMainRatio {
+            // Trim whichever side is larger (or both proportionally) so main is safe.
+            let excess = Self.minMainRatio - mainShare
+            let total = left + right
+            guard total > 0 else { return }
+            if leftReferenceActive {
+                leftSplitRatio = max(Self.minRefRatio, leftSplitRatio - excess * (left / total))
+            }
+            if rightReferenceActive {
+                rightSplitRatio = max(Self.minRefRatio, rightSplitRatio - excess * (right / total))
+            }
+        }
+    }
+
+    private func handleLeftDividerDrag(deltaX: CGFloat) {
         let usableW = frame.width - Self.paddingLeft - Self.paddingRight
-        let dividerW: CGFloat = Self.splitGap
-        let dividerX = Self.paddingLeft + (usableW - dividerW) * splitRatio
-        let dividerY = Self.paddingBottom
-        let dividerH = frame.height - Self.paddingTop - Self.paddingBottom
-        dividerView.frame = CGRect(x: dividerX, y: dividerY, width: dividerW, height: dividerH)
+        let available = availablePanelWidth(usableWidth: usableW)
+        guard available > 0 else { return }
+        leftSplitRatio += deltaX / available
+        clampRatios()
+        updateDividerPositions()
+        onSplitRatioChanged?()
+    }
+
+    private func handleRightDividerDrag(deltaX: CGFloat) {
+        let usableW = frame.width - Self.paddingLeft - Self.paddingRight
+        let available = availablePanelWidth(usableWidth: usableW)
+        guard available > 0 else { return }
+        // Dragging right divider rightward shrinks the right panel.
+        rightSplitRatio -= deltaX / available
+        clampRatios()
+        updateDividerPositions()
+        onSplitRatioChanged?()
+    }
+
+    private func updateDividerPositions() {
+        let usableW = frame.width - Self.paddingLeft - Self.paddingRight
+        let available = availablePanelWidth(usableWidth: usableW)
+        guard available > 0 else { return }
+
+        let leftW = leftReferenceActive ? available * leftSplitRatio : 0
+        let rightW = rightReferenceActive ? available * rightSplitRatio : 0
+        let mainW = available - leftW - rightW
+
+        let y = Self.paddingBottom
+        let h = frame.height - Self.paddingTop - Self.paddingBottom
+        let baseX = Self.paddingLeft
+
+        if leftReferenceActive {
+            let x = baseX + leftW
+            leftDividerView.frame = CGRect(x: x, y: y, width: Self.splitGap, height: h)
+        }
+        if rightReferenceActive {
+            let leftGap = leftReferenceActive ? Self.splitGap : 0
+            let x = baseX + leftW + leftGap + mainW
+            rightDividerView.frame = CGRect(x: x, y: y, width: Self.splitGap, height: h)
+        }
     }
 
     override func setFrame(_ frameRect: NSRect, display flag: Bool) {
         super.setFrame(Self.clampToScreens(frameRect), display: flag)
-        if referenceActive { updateDividerPosition() }
+        updateDividerPositions()
     }
 
-    /// AppKit calls this during user-initiated drag/resize. Keep the work area
-    /// fully on one screen with a margin — otherwise the reference/main panels
-    /// computed from this frame end up off-screen, macOS AX clamps the external
-    /// app windows placed there, and the next layout cycle sets them again →
-    /// continuous flicker.
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
-        // Intentionally return the frame unchanged during user-initiated
-        // drag/resize. Clamping here (even by the frame's own center) fights
-        // slow cross-screen drags: whenever an edge pokes off the current
-        // screen, AppKit snaps it back before the center crosses the boundary.
-        // Instead we clamp on drag-end via `windowDidMove` + settle timer.
         frameRect
     }
 
-    /// Margin between the work-area edge and the target screen's visible frame.
     static let screenMargin: CGFloat = 12
 
     static func clampToScreens(_ frameRect: NSRect) -> NSRect {
@@ -300,27 +388,45 @@ final class WorkAreaWindow: NSWindow {
         return dx * dx + dy * dy
     }
 
-    // MARK: - Split Layout (Reference Mode)
+    // MARK: - Panel Frames (CG coordinates)
 
-    private static let splitGap: CGFloat = 8
-
-    /// Left panel for the main window when a reference is pinned (CG coordinates).
-    func mainPanelCGFrame(splitRatio: CGFloat) -> CGRect {
-        let usable = usableCGFrame
-        let mainW = (usable.width - Self.splitGap) * splitRatio
-        return CGRect(x: usable.origin.x, y: usable.origin.y,
-                      width: mainW, height: usable.height)
+    private struct PanelRects {
+        let left: CGRect?
+        let main: CGRect
+        let right: CGRect?
     }
 
-    /// Right panel for the reference window (CG coordinates).
-    func referencePanelCGFrame(splitRatio: CGFloat) -> CGRect {
+    private func computePanelRects() -> PanelRects {
         let usable = usableCGFrame
-        let mainW = (usable.width - Self.splitGap) * splitRatio
-        let refX = usable.origin.x + mainW + Self.splitGap
-        let refW = usable.width - mainW - Self.splitGap
-        return CGRect(x: refX, y: usable.origin.y,
-                      width: refW, height: usable.height)
+        let available = max(0, usable.width - CGFloat(activeGapCount) * Self.splitGap)
+        let leftW = leftReferenceActive ? available * leftSplitRatio : 0
+        let rightW = rightReferenceActive ? available * rightSplitRatio : 0
+        let mainW = available - leftW - rightW
+
+        var x = usable.origin.x
+        var leftRect: CGRect? = nil
+        if leftReferenceActive {
+            leftRect = CGRect(x: x, y: usable.origin.y, width: leftW, height: usable.height)
+            x += leftW + Self.splitGap
+        }
+        let mainRect = CGRect(x: x, y: usable.origin.y, width: mainW, height: usable.height)
+        x += mainW
+        var rightRect: CGRect? = nil
+        if rightReferenceActive {
+            x += Self.splitGap
+            rightRect = CGRect(x: x, y: usable.origin.y, width: rightW, height: usable.height)
+        }
+        return PanelRects(left: leftRect, main: mainRect, right: rightRect)
     }
+
+    /// Main window panel in CG coordinates. Returns full usable area if no refs are pinned.
+    func mainPanelCGFrame() -> CGRect { computePanelRects().main }
+
+    /// Left reference panel (valid when `leftReferenceActive`).
+    func leftReferencePanelCGFrame() -> CGRect { computePanelRects().left ?? usableCGFrame }
+
+    /// Right reference panel (valid when `rightReferenceActive`).
+    func rightReferencePanelCGFrame() -> CGRect { computePanelRects().right ?? usableCGFrame }
 }
 
 extension WorkAreaWindow: NSWindowDelegate {

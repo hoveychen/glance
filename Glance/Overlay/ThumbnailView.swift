@@ -11,16 +11,23 @@ final class ThumbnailView: NSView {
         didSet { updateActiveOverlay() }
     }
 
-    var isPinnedReference: Bool = false {
+    enum PinnedSide { case none, left, right }
+
+    var pinnedSide: PinnedSide = .none {
         didSet { updatePinnedOverlay() }
     }
+
+    /// Back-compat convenience: true if this window is pinned to either side.
+    var isPinnedReference: Bool { pinnedSide != .none }
 
     var onHoverStart: (() -> Void)?
     var onHoverEnd: (() -> Void)?
     /// Fires when a file/text drag hovers long enough to trigger spring-loading.
     var onSpringLoadActivated: (() -> Void)?
-    /// Fires when the pin button is clicked.
-    var onPinClicked: (() -> Void)?
+    /// Fires when the pin-left button is clicked.
+    var onPinLeftClicked: (() -> Void)?
+    /// Fires when the pin-right button is clicked.
+    var onPinRightClicked: (() -> Void)?
 
     private let imageLayer = CALayer()
     private let iconLayer = CALayer()
@@ -33,7 +40,8 @@ final class ThumbnailView: NSView {
     private let privatePlaceholder = CALayer()
     private let privateLockLabel = CATextLayer()
     private let privateSizeLabel = CATextLayer()
-    private var pinButton: NSButton!
+    private var pinLeftButton: NSButton!
+    private var pinRightButton: NSButton!
     private var trackingArea: NSTrackingArea?
     private var isMouseInside = false
     private var springLoadTimer: Timer?
@@ -123,19 +131,21 @@ final class ThumbnailView: NSView {
         pinnedLabel.isHidden = true
         layer?.addSublayer(pinnedLabel)
 
-        // Pin button (shown on hover, hidden for active window)
-        pinButton = NSButton(title: "", target: self, action: #selector(pinButtonClicked))
-        pinButton.image = NSImage(systemSymbolName: "pin", accessibilityDescription: "Pin as Reference")
-        pinButton.bezelStyle = .regularSquare
-        pinButton.isBordered = false
-        pinButton.imagePosition = .imageOnly
-        pinButton.contentTintColor = .white
-        pinButton.wantsLayer = true
-        pinButton.layer?.cornerRadius = 4
-        pinButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.15).cgColor
-        pinButton.alphaValue = 0
-        pinButton.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(pinButton)
+        // Pin-left & pin-right buttons (shown on hover, hidden for active window).
+        // "rectangle.lefthalf.filled" visually represents pinning to the left slot.
+        pinLeftButton = Self.makePinButton(
+            symbol: "rectangle.lefthalf.filled",
+            accessibility: "Pin as Left Reference",
+            target: self, action: #selector(pinLeftButtonClicked)
+        )
+        addSubview(pinLeftButton)
+
+        pinRightButton = Self.makePinButton(
+            symbol: "rectangle.righthalf.filled",
+            accessibility: "Pin as Right Reference",
+            target: self, action: #selector(pinRightButtonClicked)
+        )
+        addSubview(pinRightButton)
 
         // Hint badge
         hintLayer.fontSize = 28
@@ -175,8 +185,22 @@ final class ThumbnailView: NSView {
         layer?.addSublayer(privateSizeLabel)
     }
 
-    @objc private func pinButtonClicked() {
-        onPinClicked?()
+    @objc private func pinLeftButtonClicked() { onPinLeftClicked?() }
+    @objc private func pinRightButtonClicked() { onPinRightClicked?() }
+
+    private static func makePinButton(symbol: String, accessibility: String, target: AnyObject, action: Selector) -> NSButton {
+        let btn = NSButton(title: "", target: target, action: action)
+        btn.image = NSImage(systemSymbolName: symbol, accessibilityDescription: accessibility)
+        btn.bezelStyle = .shadowlessSquare
+        btn.isBordered = false
+        btn.isTransparent = false
+        (btn.cell as? NSButtonCell)?.backgroundColor = .clear
+        btn.imagePosition = .imageOnly
+        btn.imageScaling = .scaleProportionallyDown
+        btn.contentTintColor = .white
+        btn.alphaValue = 0
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        return btn
     }
 
     override func layout() {
@@ -197,13 +221,17 @@ final class ThumbnailView: NSView {
 
         iconLayer.frame = CGRect(x: 0, y: iconY, width: iconSize, height: iconSize)
 
-        // Pin button at the right end of the header
+        // Pin buttons at the right end of the header: [leftPin][rightPin]
         let pinSize: CGFloat = 22
-        let pinX = bounds.width - pinSize - 2
+        let pinGap: CGFloat = 2
+        let pinRightX = bounds.width - pinSize - 2
+        let pinLeftX = pinRightX - pinSize - pinGap
         let pinY = bounds.height - hH + (hH - pinSize) / 2
-        pinButton.frame = CGRect(x: pinX, y: pinY, width: pinSize, height: pinSize)
+        pinLeftButton.frame = CGRect(x: pinLeftX, y: pinY, width: pinSize, height: pinSize)
+        pinRightButton.frame = CGRect(x: pinRightX, y: pinY, width: pinSize, height: pinSize)
 
-        let labelW = bounds.width - iconSize - gap - pinSize - 6
+        let totalPinsW = pinSize * 2 + pinGap + 6
+        let labelW = bounds.width - iconSize - gap - totalPinsW
         labelLayer.frame = CGRect(x: iconSize + gap, y: labelY, width: labelW, height: labelH)
 
         // Active / Pinned overlay covers image area
@@ -267,11 +295,12 @@ final class ThumbnailView: NSView {
             imageLayer.borderWidth = 3
             CATransaction.commit()
         }
-        // Show pin button on hover (not for active window)
+        // Show pin buttons on hover (not for active window)
         if !isActiveWindow {
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.15
-                pinButton.animator().alphaValue = 1
+                pinLeftButton.animator().alphaValue = 1
+                pinRightButton.animator().alphaValue = 1
             }
         }
         onHoverStart?()
@@ -293,7 +322,8 @@ final class ThumbnailView: NSView {
         CATransaction.commit()
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
-            pinButton.animator().alphaValue = 0
+            pinLeftButton.animator().alphaValue = 0
+            pinRightButton.animator().alphaValue = 0
         }
         onHoverEnd?()
     }
@@ -372,6 +402,11 @@ final class ThumbnailView: NSView {
         CATransaction.setAnimationDuration(0.2)
         pinnedOverlay.isHidden = !isPinnedReference
         pinnedLabel.isHidden = !isPinnedReference
+        switch pinnedSide {
+        case .left:  pinnedLabel.string = "📌 Pinned Left"
+        case .right: pinnedLabel.string = "📌 Pinned Right"
+        case .none:  pinnedLabel.string = "📌 Pinned"
+        }
         if isPinnedReference {
             imageLayer.borderColor = NSColor.systemBlue.withAlphaComponent(0.6).cgColor
             imageLayer.borderWidth = 2
