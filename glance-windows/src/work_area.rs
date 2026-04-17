@@ -1,8 +1,9 @@
 // Work Area window for Glance on Windows.
 //
 // A frosted-glass background window (using Windows 11 Mica/Acrylic backdrop)
-// that hosts the focused/main window. Equivalent of the macOS
-// NSVisualEffectView with `.hudWindow` material.
+// that hosts the focused/main window and optionally one reference window
+// pinned to each side. Layout: [ left-ref | main | right-ref ].
+// Equivalent of the macOS NSVisualEffectView with `.hudWindow` material.
 
 use crate::types::Rect;
 
@@ -11,10 +12,12 @@ use crate::types::Rect;
 pub enum WorkAreaEvent {
     ExitClicked,
     SwitchClicked,
-    UnpinClicked,
+    UnpinLeftClicked,
+    UnpinRightClicked,
     Resized(Rect),
     Moved(Rect),
-    SplitRatioChanged(f64),
+    LeftSplitRatioChanged(f64),
+    RightSplitRatioChanged(f64),
 }
 
 // ---------------------------------------------------------------------------
@@ -25,11 +28,20 @@ const PADDING_TOP: f64 = 8.0;
 const PADDING_LEFT: f64 = 8.0;
 const PADDING_RIGHT: f64 = 8.0;
 const PADDING_BOTTOM: f64 = 28.0;
-const SPLIT_GAP: f64 = 8.0;
+/// Gap between adjacent panels. Doubles as the divider hit-zone width so the
+/// user can grab the split easily.
+const SPLIT_GAP: f64 = 20.0;
 
-const DEFAULT_SPLIT_RATIO: f64 = 0.6;
-const MIN_SPLIT_RATIO: f64 = 0.3;
-const MAX_SPLIT_RATIO: f64 = 0.8;
+/// Fraction of total usable width reserved for the LEFT reference panel.
+const DEFAULT_LEFT_SPLIT_RATIO: f64 = 0.25;
+/// Fraction of total usable width reserved for the RIGHT reference panel.
+const DEFAULT_RIGHT_SPLIT_RATIO: f64 = 0.3;
+
+const MIN_REF_RATIO: f64 = 0.15;
+const MAX_REF_RATIO: f64 = 0.5;
+/// Main panel is never allowed to shrink below this fraction of the available
+/// width (available = usable minus active gaps).
+const MIN_MAIN_RATIO: f64 = 0.3;
 
 // ---------------------------------------------------------------------------
 // Windows implementation
@@ -96,32 +108,37 @@ mod platform {
     const BUTTON_HEIGHT: i32 = 20;
     const BUTTON_MARGIN: i32 = 8;
 
+    #[derive(Copy, Clone, PartialEq, Eq, Debug)]
+    enum DividerSide {
+        Left,
+        Right,
+    }
+
     // ------------------------------------------------------------------
     // Per-window state stored via GWLP_USERDATA
     // ------------------------------------------------------------------
 
     struct WindowState {
         sender: Sender<WorkAreaEvent>,
-        split_ratio: f64,
-        reference_active: bool,
-        divider_dragging: bool,
+        left_split_ratio: f64,
+        right_split_ratio: f64,
+        left_reference_active: bool,
+        right_reference_active: bool,
+        dragging_divider: Option<DividerSide>,
     }
 
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
 
-    /// Extract the signed x-coordinate from an LPARAM (mouse messages).
     fn get_x_lparam(lp: LPARAM) -> i32 {
         (lp.0 & 0xFFFF) as i16 as i32
     }
 
-    /// Extract the signed y-coordinate from an LPARAM (mouse messages).
     fn get_y_lparam(lp: LPARAM) -> i32 {
         ((lp.0 >> 16) & 0xFFFF) as i16 as i32
     }
 
-    /// Read the current window rect (screen coordinates) and return as `Rect`.
     unsafe fn window_rect(hwnd: HWND) -> Rect {
         let mut rc = RECT::default();
         let _ = GetWindowRect(hwnd, &mut rc);
@@ -133,19 +150,16 @@ mod platform {
         )
     }
 
-    /// Read the client area rect (local coordinates).
     unsafe fn client_rect(hwnd: HWND) -> RECT {
         let mut rc = RECT::default();
         let _ = GetClientRect(hwnd, &mut rc);
         rc
     }
 
-    /// Encode a Rust &str as null-terminated UTF-16 Vec.
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
-    /// Button rectangle definitions (in client coordinates).
     fn exit_button_rect(client: &RECT) -> RECT {
         RECT {
             left: BUTTON_MARGIN,
@@ -168,10 +182,22 @@ mod platform {
         }
     }
 
-    fn unpin_button_rect(client: &RECT) -> RECT {
-        // Positioned to the left of the switch button.
+    /// "Unpin Left" button — sits next to the Exit button, bottom-left.
+    fn unpin_left_button_rect(client: &RECT) -> RECT {
         RECT {
-            left: client.right - BUTTON_MARGIN - BUTTON_WIDTH * 2 - BUTTON_MARGIN,
+            left: BUTTON_MARGIN * 2 + BUTTON_WIDTH,
+            top: client.bottom - BOTTOM_BAR_HEIGHT + (BOTTOM_BAR_HEIGHT - BUTTON_HEIGHT) / 2,
+            right: BUTTON_MARGIN * 2 + BUTTON_WIDTH * 2,
+            bottom: client.bottom - BOTTOM_BAR_HEIGHT
+                + (BOTTOM_BAR_HEIGHT - BUTTON_HEIGHT) / 2
+                + BUTTON_HEIGHT,
+        }
+    }
+
+    /// "Unpin Right" button — sits to the left of the Switch button.
+    fn unpin_right_button_rect(client: &RECT) -> RECT {
+        RECT {
+            left: client.right - BUTTON_MARGIN * 2 - BUTTON_WIDTH * 2,
             top: client.bottom - BOTTOM_BAR_HEIGHT + (BOTTOM_BAR_HEIGHT - BUTTON_HEIGHT) / 2,
             right: client.right - BUTTON_MARGIN * 2 - BUTTON_WIDTH,
             bottom: client.bottom - BOTTOM_BAR_HEIGHT
@@ -184,23 +210,89 @@ mod platform {
         x >= rc.left && x < rc.right && y >= rc.top && y < rc.bottom
     }
 
-    /// Width of the divider hit zone (wider than visual gap for easier grabbing).
-    const DIVIDER_HIT_WIDTH: i32 = 12;
-
-    /// Returns the divider hit zone in client coordinates, or None if
-    /// reference is not active. Uses `GetClientRect` so coordinates match
-    /// `WM_LBUTTONDOWN` / `WM_MOUSEMOVE` lparam values regardless of DWM
-    /// frame extension state.
-    unsafe fn divider_hit_zone(hwnd: HWND, state: &WindowState) -> Option<(i32, i32)> {
-        if !state.reference_active {
-            return None;
+    /// Clamp ratios to keep main panel ≥ MIN_MAIN_RATIO of available width.
+    fn clamp_ratios(left_active: bool, right_active: bool, mut left: f64, mut right: f64) -> (f64, f64) {
+        let l = if left_active { left.clamp(MIN_REF_RATIO, MAX_REF_RATIO) } else { 0.0 };
+        let r = if right_active { right.clamp(MIN_REF_RATIO, MAX_REF_RATIO) } else { 0.0 };
+        // Total ref ratio must leave at least MIN_MAIN_RATIO for main.
+        let total = l + r;
+        let max_total = 1.0 - MIN_MAIN_RATIO;
+        if total > max_total && total > 0.0 {
+            let scale = max_total / total;
+            left = if left_active { (l * scale).max(MIN_REF_RATIO) } else { left };
+            right = if right_active { (r * scale).max(MIN_REF_RATIO) } else { right };
+        } else {
+            left = l;
+            right = r;
         }
+        (left, right)
+    }
+
+    /// Returns (available_width, left_gap_active, right_gap_active).
+    fn available_panel_width(
+        usable_w: f64,
+        left_active: bool,
+        right_active: bool,
+    ) -> f64 {
+        let active_gaps = (left_active as i32 + right_active as i32) as f64;
+        (usable_w - active_gaps * SPLIT_GAP).max(0.0)
+    }
+
+    /// Horizontal center (client-x) of a divider in px.
+    unsafe fn divider_center_x(hwnd: HWND, state: &WindowState, side: DividerSide) -> Option<i32> {
+        let active = match side {
+            DividerSide::Left => state.left_reference_active,
+            DividerSide::Right => state.right_reference_active,
+        };
+        if !active { return None; }
         let cr = client_rect(hwnd);
         let w = (cr.right - cr.left) as f64;
         let usable_w = (w - PADDING_LEFT - PADDING_RIGHT).max(0.0);
-        let split_x = PADDING_LEFT + (usable_w - SPLIT_GAP) * state.split_ratio;
-        let center = split_x as i32 + (SPLIT_GAP as i32) / 2;
-        Some((center - DIVIDER_HIT_WIDTH / 2, center + DIVIDER_HIT_WIDTH / 2))
+        let avail = available_panel_width(
+            usable_w,
+            state.left_reference_active,
+            state.right_reference_active,
+        );
+        let (l_r, r_r) = clamp_ratios(
+            state.left_reference_active,
+            state.right_reference_active,
+            state.left_split_ratio,
+            state.right_split_ratio,
+        );
+        match side {
+            DividerSide::Left => {
+                let left_w = avail * l_r;
+                // Center lies in the gap between left panel and main.
+                let x = PADDING_LEFT + left_w + SPLIT_GAP / 2.0;
+                Some(x.round() as i32)
+            }
+            DividerSide::Right => {
+                let right_w = avail * r_r;
+                let x = PADDING_LEFT + usable_w - right_w - SPLIT_GAP / 2.0;
+                Some(x.round() as i32)
+            }
+        }
+    }
+
+    /// Divider hit zone (inclusive-exclusive client-x range).
+    unsafe fn divider_hit_zone(hwnd: HWND, state: &WindowState, side: DividerSide) -> Option<(i32, i32)> {
+        let cx = divider_center_x(hwnd, state, side)?;
+        let half = (SPLIT_GAP as i32) / 2;
+        Some((cx - half, cx + half))
+    }
+
+    /// Determine which divider (if any) the point is on.
+    unsafe fn divider_at_point(hwnd: HWND, state: &WindowState, x: i32, y: i32) -> Option<DividerSide> {
+        let cr = client_rect(hwnd);
+        let top = PADDING_TOP as i32;
+        let bottom = cr.bottom - PADDING_BOTTOM as i32;
+        if y < top || y >= bottom { return None; }
+        for side in [DividerSide::Left, DividerSide::Right] {
+            if let Some((l, r)) = divider_hit_zone(hwnd, state, side) {
+                if x >= l && x < r { return Some(side); }
+            }
+        }
+        None
     }
 
     // ------------------------------------------------------------------
@@ -213,12 +305,10 @@ mod platform {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        // Retrieve per-window state.
         let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
 
         match msg {
             WM_ERASEBKGND => {
-                // Prevent flicker; DWM handles the background.
                 return LRESULT(1);
             }
 
@@ -228,6 +318,7 @@ mod platform {
                 if !hdc.is_invalid() {
                     let cr = client_rect(hwnd);
                     paint_bottom_bar(hwnd, hdc, &cr, state_ptr);
+                    paint_dividers(hwnd, hdc, &cr, state_ptr);
                     let _ = EndPaint(hwnd, &ps);
                 }
                 return LRESULT(0);
@@ -237,7 +328,6 @@ mod platform {
                 if !state_ptr.is_null() {
                     let frame = window_rect(hwnd);
                     let _ = (*state_ptr).sender.send(WorkAreaEvent::Resized(frame));
-                    // Repaint the bottom bar after resize.
                     let _ = InvalidateRect(hwnd, None, false);
                 }
                 return LRESULT(0);
@@ -252,7 +342,6 @@ mod platform {
             }
 
             WM_SIZING => {
-                // Enforce minimum size during live resize.
                 if lparam.0 == 0 {
                     return LRESULT(0);
                 }
@@ -265,15 +354,12 @@ mod platform {
                 if h < MIN_HEIGHT {
                     rc.bottom = rc.top + MIN_HEIGHT;
                 }
-                return LRESULT(1); // TRUE = we modified the rect
+                return LRESULT(1);
             }
 
             WM_GETMINMAXINFO => {
                 let mmi = &mut *(lparam.0 as *mut MINMAXINFO);
-                mmi.ptMinTrackSize = POINT {
-                    x: MIN_WIDTH,
-                    y: MIN_HEIGHT,
-                };
+                mmi.ptMinTrackSize = POINT { x: MIN_WIDTH, y: MIN_HEIGHT };
                 return LRESULT(0);
             }
 
@@ -281,7 +367,6 @@ mod platform {
                 let x = get_x_lparam(lparam);
                 let y = get_y_lparam(lparam);
 
-                // Convert screen coordinates to window-relative.
                 let mut wr = RECT::default();
                 let _ = GetWindowRect(hwnd, &mut wr);
                 let lx = x - wr.left;
@@ -289,77 +374,43 @@ mod platform {
                 let w = wr.right - wr.left;
                 let h = wr.bottom - wr.top;
 
-                // Resize borders (edges).
                 let on_left = lx < RESIZE_BORDER;
                 let on_right = lx >= w - RESIZE_BORDER;
                 let on_top = ly < RESIZE_BORDER;
                 let on_bottom = ly >= h - RESIZE_BORDER;
 
-                if on_top && on_left {
-                    return LRESULT(HTTOPLEFT as isize);
-                }
-                if on_top && on_right {
-                    return LRESULT(HTTOPRIGHT as isize);
-                }
-                if on_bottom && on_left {
-                    return LRESULT(HTBOTTOMLEFT as isize);
-                }
-                if on_bottom && on_right {
-                    return LRESULT(HTBOTTOMRIGHT as isize);
-                }
-                if on_left {
-                    return LRESULT(HTLEFT as isize);
-                }
-                if on_right {
-                    return LRESULT(HTRIGHT as isize);
-                }
-                if on_top {
-                    return LRESULT(HTTOP as isize);
-                }
-                if on_bottom {
-                    return LRESULT(HTBOTTOM as isize);
-                }
+                if on_top && on_left { return LRESULT(HTTOPLEFT as isize); }
+                if on_top && on_right { return LRESULT(HTTOPRIGHT as isize); }
+                if on_bottom && on_left { return LRESULT(HTBOTTOMLEFT as isize); }
+                if on_bottom && on_right { return LRESULT(HTBOTTOMRIGHT as isize); }
+                if on_left { return LRESULT(HTLEFT as isize); }
+                if on_right { return LRESULT(HTRIGHT as isize); }
+                if on_top { return LRESULT(HTTOP as isize); }
+                if on_bottom { return LRESULT(HTBOTTOM as isize); }
 
-                // Bottom bar area — check for button clicks.
                 let cr = client_rect(hwnd);
                 if ly >= (cr.bottom - BOTTOM_BAR_HEIGHT) {
                     return LRESULT(HTCLIENT as isize);
                 }
 
-                // Divider zone — when reference is pinned.
                 if !state_ptr.is_null() {
-                    if let Some((div_left, div_right)) = divider_hit_zone(hwnd, &*state_ptr) {
-                        if lx >= div_left && lx < div_right
-                            && ly >= PADDING_TOP as i32
-                            && ly < (h - PADDING_BOTTOM as i32)
-                        {
-                            return LRESULT(HTCLIENT as isize);
-                        }
+                    if divider_at_point(hwnd, &*state_ptr, lx, ly).is_some() {
+                        return LRESULT(HTCLIENT as isize);
                     }
                 }
 
-                // Main area — draggable.
                 return LRESULT(HTCAPTION as isize);
             }
 
             WM_SETCURSOR => {
-                // Show resize cursor when hovering the divider zone.
                 if !state_ptr.is_null() {
-                    if let Some((div_left, div_right)) = divider_hit_zone(hwnd, &*state_ptr) {
-                        // Convert screen cursor position to client coordinates.
-                        let mut pt = POINT::default();
-                        let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt);
-                        let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt);
-                        let cr = client_rect(hwnd);
-                        if pt.x >= div_left && pt.x < div_right
-                            && pt.y >= PADDING_TOP as i32
-                            && pt.y < (cr.bottom - PADDING_BOTTOM as i32)
-                        {
-                            let cursor = LoadCursorW(None, IDC_SIZEWE)
-                                .unwrap_or_default();
-                            SetCursor(cursor);
-                            return LRESULT(1); // We handled the cursor.
-                        }
+                    let mut pt = POINT::default();
+                    let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt);
+                    let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt);
+                    if divider_at_point(hwnd, &*state_ptr, pt.x, pt.y).is_some() {
+                        let cursor = LoadCursorW(None, IDC_SIZEWE).unwrap_or_default();
+                        SetCursor(cursor);
+                        return LRESULT(1);
                     }
                 }
                 return DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -371,17 +422,10 @@ mod platform {
                     let y = get_y_lparam(lparam);
                     let cr = client_rect(hwnd);
 
-                    // Check divider zone first.
-                    if let Some((div_left, div_right)) = divider_hit_zone(hwnd, &*state_ptr) {
-                        let h = cr.bottom - cr.top;
-                        if x >= div_left && x < div_right
-                            && y >= PADDING_TOP as i32
-                            && y < (h - PADDING_BOTTOM as i32)
-                        {
-                            (*state_ptr).divider_dragging = true;
-                            SetCapture(hwnd);
-                            return LRESULT(0);
-                        }
+                    if let Some(side) = divider_at_point(hwnd, &*state_ptr, x, y) {
+                        (*state_ptr).dragging_divider = Some(side);
+                        SetCapture(hwnd);
+                        return LRESULT(0);
                     }
 
                     let exit_rc = exit_button_rect(&cr);
@@ -396,10 +440,18 @@ mod platform {
                         return LRESULT(0);
                     }
 
-                    if (*state_ptr).reference_active {
-                        let unpin_rc = unpin_button_rect(&cr);
+                    if (*state_ptr).left_reference_active {
+                        let unpin_rc = unpin_left_button_rect(&cr);
                         if point_in_rect(x, y, &unpin_rc) {
-                            let _ = (*state_ptr).sender.send(WorkAreaEvent::UnpinClicked);
+                            let _ = (*state_ptr).sender.send(WorkAreaEvent::UnpinLeftClicked);
+                            return LRESULT(0);
+                        }
+                    }
+
+                    if (*state_ptr).right_reference_active {
+                        let unpin_rc = unpin_right_button_rect(&cr);
+                        if point_in_rect(x, y, &unpin_rc) {
+                            let _ = (*state_ptr).sender.send(WorkAreaEvent::UnpinRightClicked);
                             return LRESULT(0);
                         }
                     }
@@ -408,36 +460,67 @@ mod platform {
             }
 
             WM_MOUSEMOVE => {
-                if !state_ptr.is_null() && (*state_ptr).divider_dragging {
-                    let x = get_x_lparam(lparam);
-                    // Compute new split ratio from cursor x position.
-                    let cr = client_rect(hwnd);
-                    let usable_w = ((cr.right - cr.left) as f64
-                        - PADDING_LEFT - PADDING_RIGHT).max(1.0);
-                    let relative_x = x as f64 - PADDING_LEFT;
-                    let new_ratio = (relative_x / usable_w)
-                        .clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
-                    (*state_ptr).split_ratio = new_ratio;
-                    let _ = (*state_ptr)
-                        .sender
-                        .send(WorkAreaEvent::SplitRatioChanged(new_ratio));
-                    let _ = InvalidateRect(hwnd, None, false);
-                    return LRESULT(0);
+                if !state_ptr.is_null() {
+                    if let Some(side) = (*state_ptr).dragging_divider {
+                        let x = get_x_lparam(lparam);
+                        let cr = client_rect(hwnd);
+                        let usable_w = ((cr.right - cr.left) as f64
+                            - PADDING_LEFT - PADDING_RIGHT).max(1.0);
+                        let avail = available_panel_width(
+                            usable_w,
+                            (*state_ptr).left_reference_active,
+                            (*state_ptr).right_reference_active,
+                        ).max(1.0);
+                        match side {
+                            DividerSide::Left => {
+                                let rel = (x as f64 - PADDING_LEFT).max(0.0);
+                                let new_ratio = (rel / avail).clamp(MIN_REF_RATIO, MAX_REF_RATIO);
+                                (*state_ptr).left_split_ratio = new_ratio;
+                                let (lc, _) = clamp_ratios(
+                                    (*state_ptr).left_reference_active,
+                                    (*state_ptr).right_reference_active,
+                                    new_ratio,
+                                    (*state_ptr).right_split_ratio,
+                                );
+                                (*state_ptr).left_split_ratio = lc;
+                                let _ = (*state_ptr).sender.send(
+                                    WorkAreaEvent::LeftSplitRatioChanged(lc),
+                                );
+                            }
+                            DividerSide::Right => {
+                                // Distance from right padding edge back to cursor.
+                                let rel = ((PADDING_LEFT + usable_w) - x as f64).max(0.0);
+                                let new_ratio = (rel / avail).clamp(MIN_REF_RATIO, MAX_REF_RATIO);
+                                (*state_ptr).right_split_ratio = new_ratio;
+                                let (_, rc2) = clamp_ratios(
+                                    (*state_ptr).left_reference_active,
+                                    (*state_ptr).right_reference_active,
+                                    (*state_ptr).left_split_ratio,
+                                    new_ratio,
+                                );
+                                (*state_ptr).right_split_ratio = rc2;
+                                let _ = (*state_ptr).sender.send(
+                                    WorkAreaEvent::RightSplitRatioChanged(rc2),
+                                );
+                            }
+                        }
+                        let _ = InvalidateRect(hwnd, None, false);
+                        return LRESULT(0);
+                    }
                 }
             }
 
             WM_LBUTTONUP => {
-                if !state_ptr.is_null() && (*state_ptr).divider_dragging {
-                    (*state_ptr).divider_dragging = false;
+                if !state_ptr.is_null() && (*state_ptr).dragging_divider.is_some() {
+                    (*state_ptr).dragging_divider = None;
                     let _ = ReleaseCapture();
                     return LRESULT(0);
                 }
             }
 
-            // Cancel divider drag on system interruptions (modal dialogs, Alt+Tab, etc.)
             0x001F /* WM_CANCELMODE */ => {
-                if !state_ptr.is_null() && (*state_ptr).divider_dragging {
-                    (*state_ptr).divider_dragging = false;
+                if !state_ptr.is_null() && (*state_ptr).dragging_divider.is_some() {
+                    (*state_ptr).dragging_divider = None;
                     let _ = ReleaseCapture();
                 }
             }
@@ -452,78 +535,86 @@ mod platform {
     // Painting
     // ------------------------------------------------------------------
 
+    unsafe fn paint_dividers(
+        hwnd: HWND,
+        hdc: windows::Win32::Graphics::Gdi::HDC,
+        client: &RECT,
+        state_ptr: *const WindowState,
+    ) {
+        if state_ptr.is_null() { return; }
+        let state = &*state_ptr;
+        let brush = CreateSolidBrush(COLORREF(0x00555555));
+        for side in [DividerSide::Left, DividerSide::Right] {
+            if let Some(cx) = divider_center_x(hwnd, state, side) {
+                let line = RECT {
+                    left: cx - 1,
+                    top: PADDING_TOP as i32,
+                    right: cx + 1,
+                    bottom: client.bottom - PADDING_BOTTOM as i32,
+                };
+                FillRect(hdc, &line, brush);
+            }
+        }
+        let _ = DeleteObject(brush);
+    }
+
     unsafe fn paint_bottom_bar(
         _hwnd: HWND,
         hdc: windows::Win32::Graphics::Gdi::HDC,
         client: &RECT,
         state_ptr: *const WindowState,
     ) {
-        // Semi-transparent dark bar at the bottom.
         let bar_rect = RECT {
             left: 0,
             top: client.bottom - BOTTOM_BAR_HEIGHT,
             right: client.right,
             bottom: client.bottom,
         };
-        let bar_brush = CreateSolidBrush(COLORREF(0x00201010)); // dark
+        let bar_brush = CreateSolidBrush(COLORREF(0x00201010));
         FillRect(hdc, &bar_rect, bar_brush);
         let _ = DeleteObject(bar_brush);
 
-        // Create font for labels.
         let face = wide("Segoe UI");
         let font = CreateFontW(
-            14,                                     // height
-            0,                                      // width (auto)
-            0,                                      // escapement
-            0,                                      // orientation
-            FW_NORMAL.0 as i32,                     // weight
-            0,                                      // italic
-            0,                                      // underline
-            0,                                      // strikeout
-            DEFAULT_CHARSET.0 as u32,               // charset
-            OUT_DEFAULT_PRECIS.0 as u32,            // out precision
-            CLIP_DEFAULT_PRECIS.0 as u32,           // clip precision
-            CLEARTYPE_QUALITY.0 as u32,             // quality
-            DEFAULT_PITCH.0 as u32,                 // pitch and family
+            14, 0, 0, 0,
+            FW_NORMAL.0 as i32,
+            0, 0, 0,
+            DEFAULT_CHARSET.0 as u32,
+            OUT_DEFAULT_PRECIS.0 as u32,
+            CLIP_DEFAULT_PRECIS.0 as u32,
+            CLEARTYPE_QUALITY.0 as u32,
+            DEFAULT_PITCH.0 as u32,
             windows::core::PCWSTR(face.as_ptr()),
         );
         let old_font = SelectObject(hdc, font);
         SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, COLORREF(0x00CCCCCC)); // light gray
+        SetTextColor(hdc, COLORREF(0x00CCCCCC));
 
-        // "Exit" button — bottom-left.
         let mut exit_rc = exit_button_rect(client);
         let mut exit_text = wide("\u{2715} Exit");
-        DrawTextW(
-            hdc,
-            &mut exit_text,
-            &mut exit_rc,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-        );
+        DrawTextW(hdc, &mut exit_text, &mut exit_rc,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-        // "Switch (Alt)" button — bottom-right.
         let mut switch_rc = switch_button_rect(client);
         let mut switch_text = wide("\u{21E5} Switch (Alt)");
-        DrawTextW(
-            hdc,
-            &mut switch_text,
-            &mut switch_rc,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-        );
+        DrawTextW(hdc, &mut switch_text, &mut switch_rc,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-        // "Unpin Ref" button — shown only when reference is active.
-        if !state_ptr.is_null() && (*state_ptr).reference_active {
-            let mut unpin_rc = unpin_button_rect(client);
-            let mut unpin_text = wide("\u{2715} Unpin Ref");
-            DrawTextW(
-                hdc,
-                &mut unpin_text,
-                &mut unpin_rc,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-            );
+        if !state_ptr.is_null() {
+            if (*state_ptr).left_reference_active {
+                let mut rc = unpin_left_button_rect(client);
+                let mut t = wide("\u{2715} Unpin L");
+                DrawTextW(hdc, &mut t, &mut rc,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+            if (*state_ptr).right_reference_active {
+                let mut rc = unpin_right_button_rect(client);
+                let mut t = wide("\u{2715} Unpin R");
+                DrawTextW(hdc, &mut t, &mut rc,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
         }
 
-        // "Work Area" label — centered.
         let mut label_rc = RECT {
             left: client.left,
             top: client.bottom - BOTTOM_BAR_HEIGHT,
@@ -531,14 +622,9 @@ mod platform {
             bottom: client.bottom,
         };
         let mut label_text = wide("Work Area");
-        DrawTextW(
-            hdc,
-            &mut label_text,
-            &mut label_rc,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-        );
+        DrawTextW(hdc, &mut label_text, &mut label_rc,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-        // Restore old font, delete ours.
         SelectObject(hdc, old_font);
         let _ = DeleteObject(font);
     }
@@ -548,7 +634,6 @@ mod platform {
     // ------------------------------------------------------------------
 
     unsafe fn apply_mica_backdrop(hwnd: HWND) {
-        // Enable immersive dark mode.
         let dark: u32 = 1;
         let _ = DwmSetWindowAttribute(
             hwnd,
@@ -557,20 +642,12 @@ mod platform {
             mem::size_of::<u32>() as u32,
         );
 
-        // Extend frame into entire client area for DWM composition.
         let margins = MARGINS {
-            cxLeftWidth: -1,
-            cxRightWidth: -1,
-            cyTopHeight: -1,
-            cyBottomHeight: -1,
+            cxLeftWidth: -1, cxRightWidth: -1,
+            cyTopHeight: -1, cyBottomHeight: -1,
         };
         let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
 
-        // Set system backdrop type to Acrylic (transient window). This is the
-        // closest Windows 11 analogue to macOS's NSVisualEffectView
-        // `.hudWindow` material — a strongly blurred, translucent frosted
-        // glass effect. Mica Alt (DWMSBT_TABBEDWINDOW) is too opaque / too
-        // dark for a HUD-style surface.
         let backdrop_type: DWM_SYSTEMBACKDROP_TYPE = DWMSBT_TRANSIENTWINDOW;
         let _ = DwmSetWindowAttribute(
             hwnd,
@@ -590,7 +667,6 @@ mod platform {
         state: *mut WindowState,
     }
 
-    // HWND is Send-safe when properly managed.
     unsafe impl Send for WorkAreaWindow {}
 
     impl WorkAreaWindow {
@@ -615,11 +691,6 @@ mod platform {
                     return Err("RegisterClassExW failed for GlanceWorkArea".to_string());
                 }
 
-                // Note: WS_EX_NOREDIRECTIONBITMAP must NOT be used here. That
-                // flag disables the GDI redirection surface, which would make
-                // all BeginPaint/FillRect/DrawTextW output invisible — the
-                // bottom bar and its text/buttons vanish while only the
-                // DWM-composited backdrop remains.
                 let ex_style = WS_EX_TOOLWINDOW;
                 let style = WS_POPUP | WS_THICKFRAME;
 
@@ -632,59 +703,43 @@ mod platform {
                     frame.y.round() as i32,
                     frame.width.round() as i32,
                     frame.height.round() as i32,
-                    None,
-                    None,
+                    None, None,
                     hinstance,
                     None,
                 )
                 .map_err(|e| format!("CreateWindowExW failed: {e}"))?;
 
-                // Allocate per-window state on the heap.
                 let state = Box::into_raw(Box::new(WindowState {
                     sender,
-                    split_ratio: DEFAULT_SPLIT_RATIO,
-                    reference_active: false,
-                    divider_dragging: false,
+                    left_split_ratio: DEFAULT_LEFT_SPLIT_RATIO,
+                    right_split_ratio: DEFAULT_RIGHT_SPLIT_RATIO,
+                    left_reference_active: false,
+                    right_reference_active: false,
+                    dragging_divider: None,
                 }));
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize);
 
-                // Apply Mica backdrop (best-effort; fails gracefully on older Windows).
                 apply_mica_backdrop(hwnd);
 
-                // Place behind normal windows.
                 let _ = SetWindowPos(
-                    hwnd,
-                    HWND_BOTTOM,
-                    0,
-                    0,
-                    0,
-                    0,
+                    hwnd, HWND_BOTTOM, 0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                 );
 
                 log::info!("WorkArea window created (hwnd={:?})", hwnd);
 
-                Ok(WorkAreaWindow {
-                    hwnd,
-                    class_atom,
-                    state,
-                })
+                Ok(WorkAreaWindow { hwnd, class_atom, state })
             }
         }
 
-        pub fn hwnd(&self) -> isize {
-            self.hwnd.0 as isize
-        }
+        pub fn hwnd(&self) -> isize { self.hwnd.0 as isize }
 
-        pub fn frame(&self) -> Rect {
-            unsafe { window_rect(self.hwnd) }
-        }
+        pub fn frame(&self) -> Rect { unsafe { window_rect(self.hwnd) } }
 
         pub fn set_frame(&self, frame: &Rect) {
             unsafe {
                 let _ = SetWindowPos(
-                    self.hwnd,
-                    None,
+                    self.hwnd, None,
                     frame.x.round() as i32,
                     frame.y.round() as i32,
                     frame.width.round() as i32,
@@ -694,7 +749,6 @@ mod platform {
             }
         }
 
-        /// The usable interior, inset by padding.
         pub fn usable_frame(&self) -> Rect {
             let f = self.frame();
             Rect::new(
@@ -705,94 +759,133 @@ mod platform {
             )
         }
 
-        pub fn split_ratio(&self) -> f64 {
-            unsafe {
-                if self.state.is_null() {
-                    DEFAULT_SPLIT_RATIO
-                } else {
-                    (*self.state).split_ratio
-                }
-            }
+        fn state_ref(&self) -> Option<&WindowState> {
+            unsafe { self.state.as_ref() }
         }
 
-        pub fn set_split_ratio(&mut self, ratio: f64) {
-            let clamped = ratio.clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
-            unsafe {
-                if !self.state.is_null() {
-                    (*self.state).split_ratio = clamped;
-                    let _ = (*self.state)
-                        .sender
-                        .send(WorkAreaEvent::SplitRatioChanged(clamped));
-                }
-            }
+        pub fn left_split_ratio(&self) -> f64 {
+            self.state_ref().map(|s| s.left_split_ratio).unwrap_or(DEFAULT_LEFT_SPLIT_RATIO)
         }
 
-        /// Main panel frame (left side) when a reference is pinned.
-        pub fn main_panel_frame(&self) -> Rect {
-            let uf = self.usable_frame();
-            let ratio = self.split_ratio();
-            let main_w = (uf.width - SPLIT_GAP) * ratio;
-            Rect::new(uf.x, uf.y, main_w.max(0.0), uf.height)
+        pub fn right_split_ratio(&self) -> f64 {
+            self.state_ref().map(|s| s.right_split_ratio).unwrap_or(DEFAULT_RIGHT_SPLIT_RATIO)
         }
 
-        /// Reference panel frame (right side) when a reference is pinned.
-        pub fn reference_panel_frame(&self) -> Rect {
-            let uf = self.usable_frame();
-            let ratio = self.split_ratio();
-            let main_w = (uf.width - SPLIT_GAP) * ratio;
-            let ref_x = uf.x + main_w + SPLIT_GAP;
-            let ref_w = (uf.width - main_w - SPLIT_GAP).max(0.0);
-            Rect::new(ref_x, uf.y, ref_w, uf.height)
-        }
-
-        pub fn set_reference_active(&mut self, active: bool) {
+        pub fn set_left_split_ratio(&mut self, ratio: f64) {
             unsafe {
                 if !self.state.is_null() {
-                    (*self.state).reference_active = active;
-                    // Repaint to show/hide the unpin button.
+                    (*self.state).left_split_ratio = ratio.clamp(MIN_REF_RATIO, MAX_REF_RATIO);
                     let _ = InvalidateRect(self.hwnd, None, false);
                 }
             }
         }
 
+        pub fn set_right_split_ratio(&mut self, ratio: f64) {
+            unsafe {
+                if !self.state.is_null() {
+                    (*self.state).right_split_ratio = ratio.clamp(MIN_REF_RATIO, MAX_REF_RATIO);
+                    let _ = InvalidateRect(self.hwnd, None, false);
+                }
+            }
+        }
+
+        pub fn left_reference_active(&self) -> bool {
+            self.state_ref().map(|s| s.left_reference_active).unwrap_or(false)
+        }
+
+        pub fn right_reference_active(&self) -> bool {
+            self.state_ref().map(|s| s.right_reference_active).unwrap_or(false)
+        }
+
+        pub fn set_left_reference_active(&mut self, active: bool) {
+            unsafe {
+                if !self.state.is_null() {
+                    (*self.state).left_reference_active = active;
+                    let _ = InvalidateRect(self.hwnd, None, false);
+                }
+            }
+        }
+
+        pub fn set_right_reference_active(&mut self, active: bool) {
+            unsafe {
+                if !self.state.is_null() {
+                    (*self.state).right_reference_active = active;
+                    let _ = InvalidateRect(self.hwnd, None, false);
+                }
+            }
+        }
+
+        /// Compute panel frames: (main, left_ref_opt, right_ref_opt).
+        fn compute_panels(&self) -> (Rect, Option<Rect>, Option<Rect>) {
+            let uf = self.usable_frame();
+            let s = match self.state_ref() {
+                Some(s) => s,
+                None => return (uf, None, None),
+            };
+            let left_active = s.left_reference_active;
+            let right_active = s.right_reference_active;
+            let avail = available_panel_width(uf.width, left_active, right_active);
+            let (lr, rr) = clamp_ratios(left_active, right_active, s.left_split_ratio, s.right_split_ratio);
+            let left_w = avail * lr;
+            let right_w = avail * rr;
+            let main_w = (avail - left_w - right_w).max(0.0);
+
+            let mut cursor_x = uf.x;
+            let left_rect = if left_active {
+                let r = Rect::new(cursor_x, uf.y, left_w, uf.height);
+                cursor_x += left_w + SPLIT_GAP;
+                Some(r)
+            } else {
+                None
+            };
+            let main_rect = Rect::new(cursor_x, uf.y, main_w, uf.height);
+            cursor_x += main_w;
+            let right_rect = if right_active {
+                cursor_x += SPLIT_GAP;
+                Some(Rect::new(cursor_x, uf.y, right_w, uf.height))
+            } else {
+                None
+            };
+            (main_rect, left_rect, right_rect)
+        }
+
+        pub fn main_panel_frame(&self) -> Rect {
+            self.compute_panels().0
+        }
+
+        pub fn left_reference_panel_frame(&self) -> Option<Rect> {
+            self.compute_panels().1
+        }
+
+        pub fn right_reference_panel_frame(&self) -> Option<Rect> {
+            self.compute_panels().2
+        }
+
         pub fn show(&self) {
             unsafe {
                 let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-                // Keep behind normal windows.
                 let _ = SetWindowPos(
-                    self.hwnd,
-                    HWND_BOTTOM,
-                    0,
-                    0,
-                    0,
-                    0,
+                    self.hwnd, HWND_BOTTOM, 0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                 );
             }
         }
 
         pub fn hide(&self) {
-            unsafe {
-                let _ = ShowWindow(self.hwnd, SW_HIDE);
-            }
+            unsafe { let _ = ShowWindow(self.hwnd, SW_HIDE); }
         }
 
         pub fn destroy(&mut self) {
             unsafe {
                 if !self.hwnd.is_invalid() {
-                    // Clear user data before destroying.
                     SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, 0);
                     let _ = DestroyWindow(self.hwnd);
                     self.hwnd = HWND::default();
                 }
-
-                // Free the heap-allocated state.
                 if !self.state.is_null() {
                     let _ = Box::from_raw(self.state);
                     self.state = std::ptr::null_mut();
                 }
-
-                // Unregister the window class.
                 if self.class_atom != 0 {
                     if let Ok(hinstance) = GetModuleHandleW(None) {
                         let _ = UnregisterClassW(
@@ -803,15 +896,12 @@ mod platform {
                     self.class_atom = 0;
                 }
             }
-
             log::info!("WorkArea window destroyed");
         }
     }
 
     impl Drop for WorkAreaWindow {
-        fn drop(&mut self) {
-            self.destroy();
-        }
+        fn drop(&mut self) { self.destroy(); }
     }
 }
 
@@ -827,8 +917,31 @@ mod platform {
 
     pub struct WorkAreaWindow {
         frame: Rect,
-        split_ratio: f64,
-        reference_active: bool,
+        left_split_ratio: f64,
+        right_split_ratio: f64,
+        left_reference_active: bool,
+        right_reference_active: bool,
+    }
+
+    fn clamp_ratios(left_active: bool, right_active: bool, mut left: f64, mut right: f64) -> (f64, f64) {
+        let l = if left_active { left.clamp(MIN_REF_RATIO, MAX_REF_RATIO) } else { 0.0 };
+        let r = if right_active { right.clamp(MIN_REF_RATIO, MAX_REF_RATIO) } else { 0.0 };
+        let total = l + r;
+        let max_total = 1.0 - MIN_MAIN_RATIO;
+        if total > max_total && total > 0.0 {
+            let scale = max_total / total;
+            left = if left_active { (l * scale).max(MIN_REF_RATIO) } else { left };
+            right = if right_active { (r * scale).max(MIN_REF_RATIO) } else { right };
+        } else {
+            left = l;
+            right = r;
+        }
+        (left, right)
+    }
+
+    fn available_panel_width(usable_w: f64, left_active: bool, right_active: bool) -> f64 {
+        let active_gaps = (left_active as i32 + right_active as i32) as f64;
+        (usable_w - active_gaps * SPLIT_GAP).max(0.0)
     }
 
     impl WorkAreaWindow {
@@ -838,19 +951,15 @@ mod platform {
         ) -> Result<Self, String> {
             Ok(WorkAreaWindow {
                 frame: *frame,
-                split_ratio: DEFAULT_SPLIT_RATIO,
-                reference_active: false,
+                left_split_ratio: DEFAULT_LEFT_SPLIT_RATIO,
+                right_split_ratio: DEFAULT_RIGHT_SPLIT_RATIO,
+                left_reference_active: false,
+                right_reference_active: false,
             })
         }
 
-        pub fn hwnd(&self) -> isize {
-            0
-        }
-
-        pub fn frame(&self) -> Rect {
-            self.frame
-        }
-
+        pub fn hwnd(&self) -> isize { 0 }
+        pub fn frame(&self) -> Rect { self.frame }
         pub fn set_frame(&self, _frame: &Rect) {}
 
         pub fn usable_frame(&self) -> Rect {
@@ -863,31 +972,55 @@ mod platform {
             )
         }
 
-        pub fn split_ratio(&self) -> f64 {
-            self.split_ratio
+        pub fn left_split_ratio(&self) -> f64 { self.left_split_ratio }
+        pub fn right_split_ratio(&self) -> f64 { self.right_split_ratio }
+
+        pub fn set_left_split_ratio(&mut self, ratio: f64) {
+            self.left_split_ratio = ratio.clamp(MIN_REF_RATIO, MAX_REF_RATIO);
+        }
+        pub fn set_right_split_ratio(&mut self, ratio: f64) {
+            self.right_split_ratio = ratio.clamp(MIN_REF_RATIO, MAX_REF_RATIO);
         }
 
-        pub fn set_split_ratio(&mut self, ratio: f64) {
-            self.split_ratio = ratio.clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
+        pub fn left_reference_active(&self) -> bool { self.left_reference_active }
+        pub fn right_reference_active(&self) -> bool { self.right_reference_active }
+
+        pub fn set_left_reference_active(&mut self, active: bool) {
+            self.left_reference_active = active;
+        }
+        pub fn set_right_reference_active(&mut self, active: bool) {
+            self.right_reference_active = active;
         }
 
-        pub fn main_panel_frame(&self) -> Rect {
+        fn compute_panels(&self) -> (Rect, Option<Rect>, Option<Rect>) {
             let uf = self.usable_frame();
-            let main_w = (uf.width - SPLIT_GAP) * self.split_ratio;
-            Rect::new(uf.x, uf.y, main_w.max(0.0), uf.height)
+            let avail = available_panel_width(uf.width, self.left_reference_active, self.right_reference_active);
+            let (lr, rr) = clamp_ratios(
+                self.left_reference_active, self.right_reference_active,
+                self.left_split_ratio, self.right_split_ratio,
+            );
+            let left_w = avail * lr;
+            let right_w = avail * rr;
+            let main_w = (avail - left_w - right_w).max(0.0);
+
+            let mut cursor_x = uf.x;
+            let left_rect = if self.left_reference_active {
+                let r = Rect::new(cursor_x, uf.y, left_w, uf.height);
+                cursor_x += left_w + SPLIT_GAP;
+                Some(r)
+            } else { None };
+            let main_rect = Rect::new(cursor_x, uf.y, main_w, uf.height);
+            cursor_x += main_w;
+            let right_rect = if self.right_reference_active {
+                cursor_x += SPLIT_GAP;
+                Some(Rect::new(cursor_x, uf.y, right_w, uf.height))
+            } else { None };
+            (main_rect, left_rect, right_rect)
         }
 
-        pub fn reference_panel_frame(&self) -> Rect {
-            let uf = self.usable_frame();
-            let main_w = (uf.width - SPLIT_GAP) * self.split_ratio;
-            let ref_x = uf.x + main_w + SPLIT_GAP;
-            let ref_w = (uf.width - main_w - SPLIT_GAP).max(0.0);
-            Rect::new(ref_x, uf.y, ref_w, uf.height)
-        }
-
-        pub fn set_reference_active(&mut self, active: bool) {
-            self.reference_active = active;
-        }
+        pub fn main_panel_frame(&self) -> Rect { self.compute_panels().0 }
+        pub fn left_reference_panel_frame(&self) -> Option<Rect> { self.compute_panels().1 }
+        pub fn right_reference_panel_frame(&self) -> Option<Rect> { self.compute_panels().2 }
 
         pub fn show(&self) {}
         pub fn hide(&self) {}
@@ -895,5 +1028,4 @@ mod platform {
     }
 }
 
-// Re-export the platform-specific implementation.
 pub use platform::WorkAreaWindow;

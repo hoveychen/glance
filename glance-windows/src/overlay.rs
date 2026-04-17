@@ -13,6 +13,13 @@ use std::sync::mpsc::Sender;
 // OverlayEvent — events from overlay windows back to the app
 // ---------------------------------------------------------------------------
 
+/// Which side of the work area a window should be pinned to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinSide {
+    Left,
+    Right,
+}
+
 /// Events delivered from overlay windows to the main application loop.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OverlayEvent {
@@ -30,6 +37,8 @@ pub enum OverlayEvent {
     ThumbnailHoverEnd(isize),
     /// Spring-load activation: file dragged over thumbnail for 2 seconds.
     SpringLoadActivated(isize),
+    /// The user clicked a pin button on a thumbnail: (hwnd, side).
+    PinClicked(isize, PinSide),
 }
 
 // ===========================================================================
@@ -85,6 +94,30 @@ mod platform {
     const HEADER_HEIGHT: i32 = 32;
     /// Minimum mouse movement (pixels) to distinguish a drag from a click.
     const DRAG_THRESHOLD: i32 = 5;
+    /// Size (square) of each pin button in the header.
+    const PIN_BUTTON_SIZE: i32 = 22;
+    /// Margin between pin buttons and from the right edge.
+    const PIN_BUTTON_MARGIN: i32 = 4;
+
+    /// Rect for the "pin left" button — leftmost of the two, only visible when hovered.
+    fn pin_left_button_rect(width: i32) -> RECT {
+        let right = width - PIN_BUTTON_MARGIN - PIN_BUTTON_SIZE - PIN_BUTTON_MARGIN;
+        let left = right - PIN_BUTTON_SIZE;
+        let top = (HEADER_HEIGHT - PIN_BUTTON_SIZE) / 2;
+        RECT { left, top, right, bottom: top + PIN_BUTTON_SIZE }
+    }
+
+    /// Rect for the "pin right" button — rightmost of the two.
+    fn pin_right_button_rect(width: i32) -> RECT {
+        let right = width - PIN_BUTTON_MARGIN;
+        let left = right - PIN_BUTTON_SIZE;
+        let top = (HEADER_HEIGHT - PIN_BUTTON_SIZE) / 2;
+        RECT { left, top, right, bottom: top + PIN_BUTTON_SIZE }
+    }
+
+    fn point_in_rect(x: i32, y: i32, rc: &RECT) -> bool {
+        x >= rc.left && x < rc.right && y >= rc.top && y < rc.bottom
+    }
 
     /// Wide class name for overlay windows, null-terminated.
     const CLASS_NAME: &[u16] = &[
@@ -133,6 +166,9 @@ mod platform {
         mouse_down_pos: POINT,
         dragging: bool,
         mouse_tracked: bool,
+        /// True while the cursor is within the overlay (between HOVER and LEAVE).
+        /// Used to toggle pin-button visibility.
+        is_mouse_inside: bool,
         // Visual state
         visual_state: OverlayVisualState,
         hint_char: Option<String>,
@@ -289,6 +325,31 @@ mod platform {
             }
 
             WM_LBUTTONDOWN => {
+                // Check pin buttons first (only when hovered).
+                let lx = (lparam.0 & 0xFFFF) as i16 as i32;
+                let ly = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
+                if state.is_mouse_inside {
+                    let mut client_rect = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut client_rect);
+                    let w = client_rect.right - client_rect.left;
+                    let pin_l = pin_left_button_rect(w);
+                    let pin_r = pin_right_button_rect(w);
+                    if point_in_rect(lx, ly, &pin_l) {
+                        let _ = state.sender.send(OverlayEvent::PinClicked(
+                            state.source_hwnd,
+                            PinSide::Left,
+                        ));
+                        return LRESULT(0);
+                    }
+                    if point_in_rect(lx, ly, &pin_r) {
+                        let _ = state.sender.send(OverlayEvent::PinClicked(
+                            state.source_hwnd,
+                            PinSide::Right,
+                        ));
+                        return LRESULT(0);
+                    }
+                }
+
                 // Record position for click vs drag detection.
                 state.mouse_down = true;
                 state.dragging = false;
@@ -382,6 +443,8 @@ mod platform {
                 let _ = state
                     .sender
                     .send(OverlayEvent::ThumbnailHoverStart(state.source_hwnd));
+                state.is_mouse_inside = true;
+                let _ = InvalidateRect(hwnd, None, false);
                 // Re-arm tracking for leave events.
                 state.mouse_tracked = false;
                 LRESULT(0)
@@ -391,6 +454,8 @@ mod platform {
                 let _ = state
                     .sender
                     .send(OverlayEvent::ThumbnailHoverEnd(state.source_hwnd));
+                state.is_mouse_inside = false;
+                let _ = InvalidateRect(hwnd, None, false);
                 state.mouse_tracked = false;
                 LRESULT(0)
             }
@@ -513,12 +578,65 @@ mod platform {
             OverlayVisualState::Normal => {}
         }
 
+        // --- Pin buttons (visible on hover, hidden in hint mode) ---
+        if state.is_mouse_inside && state.hint_char.is_none() {
+            paint_pin_buttons(hdc, width);
+        }
+
         // --- Hint badge ---
         if let Some(ref hint) = state.hint_char {
             paint_hint_badge(hdc, &client_rect, hint);
         }
 
         let _ = EndPaint(hwnd, &ps);
+    }
+
+    /// Paint the two pin buttons (left/right) in the header.
+    unsafe fn paint_pin_buttons(
+        hdc: windows::Win32::Graphics::Gdi::HDC,
+        width: i32,
+    ) {
+        let btn_bg = CreateSolidBrush(windows::Win32::Foundation::COLORREF(rgb(60, 60, 60)));
+        let left = pin_left_button_rect(width);
+        let right = pin_right_button_rect(width);
+        FillRect(hdc, &left, btn_bg);
+        FillRect(hdc, &right, btn_bg);
+        let _ = DeleteObject(btn_bg);
+
+        // Icon: half-filled rectangle (filled on the side of the pin).
+        // Use two colored rects: an outline (white) and a filled half (white).
+        let white = CreateSolidBrush(windows::Win32::Foundation::COLORREF(COLOR_TEXT_WHITE));
+        // Left-pin: fill the LEFT half of the button.
+        let half_l_w = (left.right - left.left) / 2;
+        let left_fill = RECT {
+            left: left.left + 3,
+            top: left.top + 5,
+            right: left.left + 3 + half_l_w - 3,
+            bottom: left.bottom - 5,
+        };
+        FillRect(hdc, &left_fill, white);
+        // Right-pin: fill the RIGHT half of the button.
+        let half_r_w = (right.right - right.left) / 2;
+        let right_fill = RECT {
+            left: right.left + half_r_w,
+            top: right.top + 5,
+            right: right.right - 3,
+            bottom: right.bottom - 5,
+        };
+        FillRect(hdc, &right_fill, white);
+        let _ = DeleteObject(white);
+
+        // Outline both buttons.
+        let outline = CreateSolidBrush(windows::Win32::Foundation::COLORREF(COLOR_TEXT_WHITE));
+        FrameRect(hdc, &RECT {
+            left: left.left + 3, top: left.top + 5,
+            right: left.right - 3, bottom: left.bottom - 5,
+        }, outline);
+        FrameRect(hdc, &RECT {
+            left: right.left + 3, top: right.top + 5,
+            right: right.right - 3, bottom: right.bottom - 5,
+        }, outline);
+        let _ = DeleteObject(outline);
     }
 
     /// Paint a semi-transparent dim overlay with a centered label.
@@ -730,6 +848,7 @@ mod platform {
                     mouse_down_pos: POINT::default(),
                     dragging: false,
                     mouse_tracked: false,
+                    is_mouse_inside: false,
                     visual_state: OverlayVisualState::Normal,
                     hint_char: None,
                 });

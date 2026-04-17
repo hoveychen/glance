@@ -7,7 +7,7 @@
 use crate::input::{InputEvent, InputManager};
 use crate::layout::MissionControlLayoutEngine;
 use crate::monitor::MonitorManager;
-use crate::overlay::{OverlayEvent, OverlayManager};
+use crate::overlay::{OverlayEvent, OverlayManager, PinSide};
 use crate::thumbnail_manager::ThumbnailManager;
 use crate::tray::{TrayAction, TrayIcon};
 use crate::types::{Rect, WindowMetrics};
@@ -88,9 +88,12 @@ pub struct GlanceApp {
     is_hint_mode: bool,
     hint_mapping: HashMap<String, isize>,
 
-    // Pinned reference
-    pinned_reference_hwnd: Option<isize>,
-    pinned_reference_pid: Option<u32>,
+    // Pinned reference (left side)
+    pinned_left_hwnd: Option<isize>,
+    pinned_left_pid: Option<u32>,
+    // Pinned reference (right side)
+    pinned_right_hwnd: Option<isize>,
+    pinned_right_pid: Option<u32>,
 
     // Event channel
     event_rx: mpsc::Receiver<AppEvent>,
@@ -181,8 +184,10 @@ impl GlanceApp {
             is_hint_mode: false,
             hint_mapping: HashMap::new(),
 
-            pinned_reference_hwnd: None,
-            pinned_reference_pid: None,
+            pinned_left_hwnd: None,
+            pinned_left_pid: None,
+            pinned_right_hwnd: None,
+            pinned_right_pid: None,
 
             event_rx,
             event_tx,
@@ -317,6 +322,13 @@ impl GlanceApp {
                     self.handle_thumbnail_click(hwnd);
                 }
             }
+            AppEvent::Overlay(OverlayEvent::PinClicked(hwnd, side)) => {
+                let ref_side = match side {
+                    PinSide::Left => ReferenceSide::Left,
+                    PinSide::Right => ReferenceSide::Right,
+                };
+                self.pin_as_reference(hwnd, ref_side);
+            }
             AppEvent::WorkArea(WorkAreaEvent::ExitClicked) => {
                 self.deactivate();
             }
@@ -325,21 +337,30 @@ impl GlanceApp {
                     self.toggle_hint_mode();
                 }
             }
-            AppEvent::WorkArea(WorkAreaEvent::UnpinClicked) => {
-                self.unpin_reference();
+            AppEvent::WorkArea(WorkAreaEvent::UnpinLeftClicked) => {
+                self.unpin_reference(ReferenceSide::Left);
             }
-            AppEvent::WorkArea(WorkAreaEvent::Resized(_)) => {
+            AppEvent::WorkArea(WorkAreaEvent::UnpinRightClicked) => {
+                self.unpin_reference(ReferenceSide::Right);
+            }
+            AppEvent::WorkArea(WorkAreaEvent::Resized(r))
+            | AppEvent::WorkArea(WorkAreaEvent::Moved(r)) => {
                 if self.is_active {
+                    crate::config::update(|c| {
+                        c.work_area_frame = Some((r.x, r.y, r.width, r.height));
+                    });
                     self.refresh_layout();
                 }
             }
-            AppEvent::WorkArea(WorkAreaEvent::Moved(_)) => {
+            AppEvent::WorkArea(WorkAreaEvent::LeftSplitRatioChanged(r)) => {
                 if self.is_active {
+                    crate::config::update(|c| c.left_split_ratio = r);
                     self.refresh_layout();
                 }
             }
-            AppEvent::WorkArea(WorkAreaEvent::SplitRatioChanged(_)) => {
+            AppEvent::WorkArea(WorkAreaEvent::RightSplitRatioChanged(r)) => {
                 if self.is_active {
+                    crate::config::update(|c| c.right_split_ratio = r);
                     self.refresh_layout();
                 }
             }
@@ -392,11 +413,16 @@ impl GlanceApp {
         // Create parking manager.
         self.parking_manager = ParkingManager::new().ok();
 
-        // Determine work area dimensions: 55% width x 60% height of primary,
-        // centered.
+        // Load persisted config.
+        let cfg = crate::config::load();
+
+        // Determine work area dimensions: prefer saved frame; otherwise
+        // 55% width x 60% height of primary, centered.
         self.monitor_manager.refresh();
         let primary = self.monitor_manager.primary().cloned();
-        let work_frame = if let Some(ref mon) = primary {
+        let work_frame = if let Some((x, y, w, h)) = cfg.work_area_frame {
+            Rect::new(x, y, w, h)
+        } else if let Some(ref mon) = primary {
             let w = mon.work_area.width * 0.55;
             let h = mon.work_area.height * 0.60;
             let x = mon.work_area.x + (mon.work_area.width - w) / 2.0;
@@ -417,7 +443,9 @@ impl GlanceApp {
             }
         });
         match WorkAreaWindow::new(&work_frame, wa_sender) {
-            Ok(wa) => {
+            Ok(mut wa) => {
+                wa.set_left_split_ratio(cfg.left_split_ratio);
+                wa.set_right_split_ratio(cfg.right_split_ratio);
                 wa.show();
                 self.work_area = Some(wa);
             }
@@ -503,8 +531,10 @@ impl GlanceApp {
         self.work_area_positions.clear();
         self.manual_screen_assignment.clear();
         self.hint_mapping.clear();
-        self.pinned_reference_hwnd = None;
-        self.pinned_reference_pid = None;
+        self.pinned_left_hwnd = None;
+        self.pinned_left_pid = None;
+        self.pinned_right_hwnd = None;
+        self.pinned_right_pid = None;
 
         log::info!("Glance deactivated");
     }
@@ -552,11 +582,18 @@ impl GlanceApp {
                     real_windows.iter().find(|w| w.hwnd == h).map(|w| w.owner_pid)
                 });
             }
-            if self.pinned_reference_hwnd == Some(*hwnd) {
-                self.pinned_reference_hwnd = None;
-                self.pinned_reference_pid = None;
+            if self.pinned_left_hwnd == Some(*hwnd) {
+                self.pinned_left_hwnd = None;
+                self.pinned_left_pid = None;
                 if let Some(ref mut wa) = self.work_area {
-                    wa.set_reference_active(false);
+                    wa.set_left_reference_active(false);
+                }
+            }
+            if self.pinned_right_hwnd == Some(*hwnd) {
+                self.pinned_right_hwnd = None;
+                self.pinned_right_pid = None;
+                if let Some(ref mut wa) = self.work_area {
+                    wa.set_right_reference_active(false);
                 }
             }
         }
@@ -596,12 +633,17 @@ impl GlanceApp {
         }
 
         let main_hwnd = self.current_main_hwnd;
-        let pinned_hwnd = self.pinned_reference_hwnd;
+        let pinned_left_hwnd = self.pinned_left_hwnd;
+        let pinned_right_hwnd = self.pinned_right_hwnd;
 
         // Separate main window from thumbnail windows.
         let thumbnail_windows: Vec<_> = real_windows
             .iter()
-            .filter(|w| Some(w.hwnd) != main_hwnd && Some(w.hwnd) != pinned_hwnd)
+            .filter(|w| {
+                Some(w.hwnd) != main_hwnd
+                    && Some(w.hwnd) != pinned_left_hwnd
+                    && Some(w.hwnd) != pinned_right_hwnd
+            })
             .collect();
 
         // Build screen regions from monitors.
@@ -644,7 +686,8 @@ impl GlanceApp {
 
         // Move main window into the work area.
         if let (Some(main_h), Some(ref wa)) = (main_hwnd, &self.work_area) {
-            let target = if pinned_hwnd.is_some() {
+            let any_pinned = pinned_left_hwnd.is_some() || pinned_right_hwnd.is_some();
+            let target = if any_pinned {
                 wa.main_panel_frame()
             } else {
                 wa.usable_frame()
@@ -659,17 +702,32 @@ impl GlanceApp {
             self.work_area_positions.insert(main_h, target);
         }
 
-        // Move pinned reference window into the reference panel.
-        if let (Some(pin_h), Some(ref wa)) = (pinned_hwnd, &self.work_area) {
-            let target = wa.reference_panel_frame();
-            self.window_manager.move_window(
-                pin_h,
-                target.x.round() as i32,
-                target.y.round() as i32,
-                target.width.round() as i32,
-                target.height.round() as i32,
-            );
-            self.work_area_positions.insert(pin_h, target);
+        // Move pinned LEFT reference window into the left panel.
+        if let (Some(pin_h), Some(ref wa)) = (pinned_left_hwnd, &self.work_area) {
+            if let Some(target) = wa.left_reference_panel_frame() {
+                self.window_manager.move_window(
+                    pin_h,
+                    target.x.round() as i32,
+                    target.y.round() as i32,
+                    target.width.round() as i32,
+                    target.height.round() as i32,
+                );
+                self.work_area_positions.insert(pin_h, target);
+            }
+        }
+
+        // Move pinned RIGHT reference window into the right panel.
+        if let (Some(pin_h), Some(ref wa)) = (pinned_right_hwnd, &self.work_area) {
+            if let Some(target) = wa.right_reference_panel_frame() {
+                self.window_manager.move_window(
+                    pin_h,
+                    target.x.round() as i32,
+                    target.y.round() as i32,
+                    target.width.round() as i32,
+                    target.height.round() as i32,
+                );
+                self.work_area_positions.insert(pin_h, target);
+            }
         }
 
         // Park all non-main, non-pinned windows.
@@ -692,12 +750,18 @@ impl GlanceApp {
         if let Some(ref mut overlay) = self.overlay_manager {
             let all_info: Vec<_> = real_windows
                 .iter()
-                .filter(|w| Some(w.hwnd) != main_hwnd && Some(w.hwnd) != pinned_hwnd)
+                .filter(|w| {
+                    Some(w.hwnd) != main_hwnd
+                        && Some(w.hwnd) != pinned_left_hwnd
+                        && Some(w.hwnd) != pinned_right_hwnd
+                })
                 .cloned()
                 .collect();
             overlay.update_slots(&slots, &all_info);
             overlay.set_active_window(main_hwnd);
-            overlay.set_pinned_reference(pinned_hwnd);
+            // Overlay manager currently tracks one pinned hwnd; prefer right
+            // then left for visual purposes.
+            overlay.set_pinned_reference(pinned_right_hwnd.or(pinned_left_hwnd));
         }
 
         // Register / update DWM thumbnails (source window → overlay window).
@@ -777,11 +841,18 @@ impl GlanceApp {
             }
         }
 
-        if self.pinned_reference_hwnd == Some(hwnd) {
-            self.pinned_reference_hwnd = None;
-            self.pinned_reference_pid = None;
+        if self.pinned_left_hwnd == Some(hwnd) {
+            self.pinned_left_hwnd = None;
+            self.pinned_left_pid = None;
             if let Some(ref mut wa) = self.work_area {
-                wa.set_reference_active(false);
+                wa.set_left_reference_active(false);
+            }
+        }
+        if self.pinned_right_hwnd == Some(hwnd) {
+            self.pinned_right_hwnd = None;
+            self.pinned_right_pid = None;
+            if let Some(ref mut wa) = self.work_area {
+                wa.set_right_reference_active(false);
             }
         }
 
@@ -801,8 +872,8 @@ impl GlanceApp {
             return;
         }
 
-        // If the focused window is the pinned reference, nothing to do.
-        if self.pinned_reference_hwnd == Some(hwnd) {
+        // If the focused window is a pinned reference, nothing to do.
+        if self.pinned_left_hwnd == Some(hwnd) || self.pinned_right_hwnd == Some(hwnd) {
             return;
         }
 
@@ -882,6 +953,21 @@ impl GlanceApp {
         };
         #[cfg(not(windows))]
         let cursor_pos = (0i32, 0i32);
+
+        // Drag-to-pin: if the cursor was released inside the work area,
+        // pin the dragged window to the left or right based on cursor X
+        // relative to the work area's midpoint.
+        if let Some(ref wa) = self.work_area {
+            let f = wa.frame();
+            let cx = cursor_pos.0 as f64;
+            let cy = cursor_pos.1 as f64;
+            if cx >= f.x && cx < f.x + f.width && cy >= f.y && cy < f.y + f.height {
+                let mid_x = f.x + f.width / 2.0;
+                let side = if cx < mid_x { ReferenceSide::Left } else { ReferenceSide::Right };
+                self.pin_as_reference(dragged_hwnd, side);
+                return;
+            }
+        }
 
         // Find which overlay the cursor is over (excluding the dragged one)
         // along with that overlay's screen rect so we can choose the insertion
@@ -993,64 +1079,119 @@ impl GlanceApp {
     // -----------------------------------------------------------------------
 
     #[allow(dead_code)]
-    fn pin_as_reference(&mut self, hwnd: isize) {
+    pub(crate) fn pin_as_reference(&mut self, hwnd: isize, side: ReferenceSide) {
         if !self.is_active {
             return;
         }
 
-        self.pinned_reference_hwnd = Some(hwnd);
-
-        // Resolve pid.
-        let windows = self.window_tracker.refresh();
-        if let Some(info) = windows.iter().find(|w| w.hwnd == hwnd) {
-            self.pinned_reference_pid = Some(info.owner_pid);
+        // If this window is already pinned on the other side, unpin it there first.
+        match side {
+            ReferenceSide::Left => {
+                if self.pinned_right_hwnd == Some(hwnd) {
+                    self.unpin_reference(ReferenceSide::Right);
+                }
+                // If something else was pinned on the left, park it.
+                if let Some(old) = self.pinned_left_hwnd.take() {
+                    self.pinned_left_pid = None;
+                    self.park_hwnd(old);
+                }
+                self.pinned_left_hwnd = Some(hwnd);
+                let windows = self.window_tracker.refresh();
+                if let Some(info) = windows.iter().find(|w| w.hwnd == hwnd) {
+                    self.pinned_left_pid = Some(info.owner_pid);
+                }
+                if let Some(ref mut wa) = self.work_area {
+                    wa.set_left_reference_active(true);
+                }
+            }
+            ReferenceSide::Right => {
+                if self.pinned_left_hwnd == Some(hwnd) {
+                    self.unpin_reference(ReferenceSide::Left);
+                }
+                if let Some(old) = self.pinned_right_hwnd.take() {
+                    self.pinned_right_pid = None;
+                    self.park_hwnd(old);
+                }
+                self.pinned_right_hwnd = Some(hwnd);
+                let windows = self.window_tracker.refresh();
+                if let Some(info) = windows.iter().find(|w| w.hwnd == hwnd) {
+                    self.pinned_right_pid = Some(info.owner_pid);
+                }
+                if let Some(ref mut wa) = self.work_area {
+                    wa.set_right_reference_active(true);
+                }
+            }
         }
 
-        // Unpark the window (it will be placed in the reference panel).
+        // Unpark the window (it goes into the reference panel, not parked).
         self.parked_windows.remove(&hwnd);
         if let Some(ref mut parking) = self.parking_manager {
             parking.unpark_window(hwnd);
         }
 
-        if let Some(ref mut wa) = self.work_area {
-            wa.set_reference_active(true);
-        }
-
+        // Overlay manager currently tracks a single pinned hwnd; we feed it the
+        // most recently pinned window so the overlay gets the pinned visual.
         if let Some(ref mut overlay) = self.overlay_manager {
             overlay.set_pinned_reference(Some(hwnd));
         }
 
         self.refresh_layout();
-        log::info!("Pinned window {:#x} as reference", hwnd);
+        log::info!("Pinned window {:#x} as {:?} reference", hwnd, side);
     }
 
-    fn unpin_reference(&mut self) {
-        if let Some(hwnd) = self.pinned_reference_hwnd.take() {
-            self.pinned_reference_pid = None;
+    fn unpin_reference(&mut self, side: ReferenceSide) {
+        let hwnd_opt = match side {
+            ReferenceSide::Left => self.pinned_left_hwnd.take(),
+            ReferenceSide::Right => self.pinned_right_hwnd.take(),
+        };
+        let Some(hwnd) = hwnd_opt else { return; };
 
-            // Park the unpinned window.
-            if let Some(ref mut parking) = self.parking_manager {
-                if parking.park_window(hwnd) {
-                    self.parked_windows.insert(hwnd);
+        match side {
+            ReferenceSide::Left => {
+                self.pinned_left_pid = None;
+                if let Some(ref mut wa) = self.work_area {
+                    wa.set_left_reference_active(false);
                 }
-            } else {
-                let slot = self.parked_windows.len();
-                crate::virtual_desktop::park_window_offscreen(hwnd, slot);
-                self.parked_windows.insert(hwnd);
             }
-
-            if let Some(ref mut wa) = self.work_area {
-                wa.set_reference_active(false);
+            ReferenceSide::Right => {
+                self.pinned_right_pid = None;
+                if let Some(ref mut wa) = self.work_area {
+                    wa.set_right_reference_active(false);
+                }
             }
+        }
 
+        // Park the unpinned window.
+        self.park_hwnd(hwnd);
+
+        // If no reference is pinned anymore, clear the overlay's pinned marker.
+        if self.pinned_left_hwnd.is_none() && self.pinned_right_hwnd.is_none() {
             if let Some(ref mut overlay) = self.overlay_manager {
                 overlay.set_pinned_reference(None);
             }
+        }
 
-            self.refresh_layout();
-            log::info!("Unpinned reference window {:#x}", hwnd);
+        self.refresh_layout();
+        log::info!("Unpinned {:?} reference window {:#x}", side, hwnd);
+    }
+
+    fn park_hwnd(&mut self, hwnd: isize) {
+        if let Some(ref mut parking) = self.parking_manager {
+            if parking.park_window(hwnd) {
+                self.parked_windows.insert(hwnd);
+            }
+        } else {
+            let slot = self.parked_windows.len();
+            crate::virtual_desktop::park_window_offscreen(hwnd, slot);
+            self.parked_windows.insert(hwnd);
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceSide {
+    Left,
+    Right,
 }
 
 impl Drop for GlanceApp {

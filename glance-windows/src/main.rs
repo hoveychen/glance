@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+pub mod config;
 pub mod input;
 mod layout;
 mod monitor;
