@@ -883,24 +883,40 @@ impl GlanceApp {
         #[cfg(not(windows))]
         let cursor_pos = (0i32, 0i32);
 
-        // Find which overlay the cursor is over (excluding the dragged one).
-        let target_hwnd = self
-            .overlay_manager
-            .as_ref()
-            .and_then(|om| om.source_hwnd_at_point(cursor_pos.0, cursor_pos.1, Some(dragged_hwnd)));
+        // Find which overlay the cursor is over (excluding the dragged one)
+        // along with that overlay's screen rect so we can choose the insertion
+        // side (before/after the target) based on which half of the target the
+        // cursor fell on.
+        let hit = self.overlay_manager.as_ref().and_then(|om| {
+            om.source_hwnd_and_rect_at_point(cursor_pos.0, cursor_pos.1, Some(dragged_hwnd))
+        });
 
-        if let Some(target) = target_hwnd {
-            // Remove dragged from current position.
+        if let Some((target, (left, top, right, bottom))) = hit {
+            // Windows screen coords: y grows downward, so "above" = smaller y =
+            // earlier in reading order; "below" = later. If the cursor is
+            // within the target's vertical band, fall back to x vs. midX.
+            let mid_x = (left + right) / 2;
+            let insert_before = if cursor_pos.1 < top {
+                true
+            } else if cursor_pos.1 >= bottom {
+                false
+            } else {
+                cursor_pos.0 < mid_x
+            };
+
+            // Remove dragged from its current position, then insert at the
+            // chosen side of the target.
             self.window_order.retain(|&h| h != dragged_hwnd);
-            // Find target position and insert dragged before it.
             if let Some(pos) = self.window_order.iter().position(|&h| h == target) {
-                self.window_order.insert(pos, dragged_hwnd);
+                let insert_at = if insert_before { pos } else { pos + 1 };
+                self.window_order.insert(insert_at, dragged_hwnd);
             } else {
                 self.window_order.push(dragged_hwnd);
             }
             log::debug!(
-                "Drag reorder: moved {:#x} before {:#x}",
+                "Drag reorder: moved {:#x} {} {:#x}",
                 dragged_hwnd,
+                if insert_before { "before" } else { "after" },
                 target
             );
         }

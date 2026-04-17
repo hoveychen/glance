@@ -46,7 +46,7 @@ final class WorkAreaWindow: NSWindow {
 
     init(frame: CGRect) {
         super.init(
-            contentRect: frame,
+            contentRect: Self.clampToScreens(frame),
             styleMask: [.borderless, .resizable],
             backing: .buffered,
             defer: false
@@ -133,6 +133,31 @@ final class WorkAreaWindow: NSWindow {
         effectView.addSubview(dividerView)
 
         minSize = NSSize(width: 400, height: 300)
+        self.delegate = self
+    }
+
+    // Re-entrancy guard for the delegate clamp path.
+    private var isReclamping = false
+    // Debounce timer so we only clamp once the user stops dragging/resizing.
+    private var settleTimer: Timer?
+    private static let settleInterval: TimeInterval = 0.15
+
+    private func scheduleReclamp() {
+        guard !isReclamping else { return }
+        settleTimer?.invalidate()
+        let t = Timer.scheduledTimer(withTimeInterval: Self.settleInterval, repeats: false) { [weak self] _ in
+            self?.reclampNow()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        settleTimer = t
+    }
+
+    private func reclampNow() {
+        let clamped = Self.clampToScreens(frame)
+        guard clamped != frame else { return }
+        isReclamping = true
+        setFrame(clamped, display: true, animate: false)
+        isReclamping = false
     }
 
     private var unpinButton: NSButton!
@@ -225,8 +250,54 @@ final class WorkAreaWindow: NSWindow {
     }
 
     override func setFrame(_ frameRect: NSRect, display flag: Bool) {
-        super.setFrame(frameRect, display: flag)
+        super.setFrame(Self.clampToScreens(frameRect), display: flag)
         if referenceActive { updateDividerPosition() }
+    }
+
+    /// AppKit calls this during user-initiated drag/resize. Keep the work area
+    /// fully on one screen with a margin — otherwise the reference/main panels
+    /// computed from this frame end up off-screen, macOS AX clamps the external
+    /// app windows placed there, and the next layout cycle sets them again →
+    /// continuous flicker.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        // Intentionally return the frame unchanged during user-initiated
+        // drag/resize. Clamping here (even by the frame's own center) fights
+        // slow cross-screen drags: whenever an edge pokes off the current
+        // screen, AppKit snaps it back before the center crosses the boundary.
+        // Instead we clamp on drag-end via `windowDidMove` + settle timer.
+        frameRect
+    }
+
+    /// Margin between the work-area edge and the target screen's visible frame.
+    static let screenMargin: CGFloat = 12
+
+    static func clampToScreens(_ frameRect: NSRect) -> NSRect {
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else { return frameRect }
+
+        let center = CGPoint(x: frameRect.midX, y: frameRect.midY)
+        let target: NSScreen = screens.first(where: { $0.frame.contains(center) })
+            ?? screens.min(by: { distanceSquared(from: center, to: $0.frame)
+                              < distanceSquared(from: center, to: $1.frame) })
+            ?? screens[0]
+
+        let bounds = target.visibleFrame.insetBy(dx: screenMargin, dy: screenMargin)
+        guard bounds.width > 0, bounds.height > 0 else { return frameRect }
+
+        var result = frameRect
+        result.size.width = min(result.size.width, bounds.width)
+        result.size.height = min(result.size.height, bounds.height)
+        if result.minX < bounds.minX { result.origin.x = bounds.minX }
+        if result.maxX > bounds.maxX { result.origin.x = bounds.maxX - result.width }
+        if result.minY < bounds.minY { result.origin.y = bounds.minY }
+        if result.maxY > bounds.maxY { result.origin.y = bounds.maxY - result.height }
+        return result
+    }
+
+    private static func distanceSquared(from point: CGPoint, to rect: CGRect) -> CGFloat {
+        let dx = max(rect.minX - point.x, 0, point.x - rect.maxX)
+        let dy = max(rect.minY - point.y, 0, point.y - rect.maxY)
+        return dx * dx + dy * dy
     }
 
     // MARK: - Split Layout (Reference Mode)
@@ -250,4 +321,10 @@ final class WorkAreaWindow: NSWindow {
         return CGRect(x: refX, y: usable.origin.y,
                       width: refW, height: usable.height)
     }
+}
+
+extension WorkAreaWindow: NSWindowDelegate {
+    func windowDidMove(_ notification: Notification) { scheduleReclamp() }
+    func windowDidResize(_ notification: Notification) { scheduleReclamp() }
+    func windowDidChangeScreen(_ notification: Notification) { scheduleReclamp() }
 }

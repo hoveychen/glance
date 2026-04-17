@@ -147,10 +147,10 @@ final class ThumbnailWindow: NSWindow {
         thumbnailView.showHintPinIcon()
     }
 
-    func animateTo(frame newFrame: CGRect, duration: TimeInterval = 0.3) {
+    func animateTo(frame newFrame: CGRect, duration: TimeInterval = 0.15) {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             self.animator().setFrame(newFrame, display: true)
         }
     }

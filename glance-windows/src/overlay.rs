@@ -1159,6 +1159,18 @@ mod platform {
         /// Find which source window's overlay contains the given screen point.
         /// Optionally exclude a specific source hwnd (e.g., the window being dragged).
         pub fn source_hwnd_at_point(&self, x: i32, y: i32, exclude: Option<isize>) -> Option<isize> {
+            self.source_hwnd_and_rect_at_point(x, y, exclude)
+                .map(|(h, _)| h)
+        }
+
+        /// Same as `source_hwnd_at_point` but also returns the overlay's screen
+        /// rect (left, top, right, bottom) so callers can decide insertion side.
+        pub fn source_hwnd_and_rect_at_point(
+            &self,
+            x: i32,
+            y: i32,
+            exclude: Option<isize>,
+        ) -> Option<(isize, (i32, i32, i32, i32))> {
             for (&source_hwnd, overlay) in &self.overlays {
                 if exclude == Some(source_hwnd) {
                     continue;
@@ -1168,7 +1180,7 @@ mod platform {
                     let mut rc = RECT::default();
                     let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rc);
                     if x >= rc.left && x < rc.right && y >= rc.top && y < rc.bottom {
-                        return Some(source_hwnd);
+                        return Some((source_hwnd, (rc.left, rc.top, rc.right, rc.bottom)));
                     }
                 }
             }
@@ -1251,6 +1263,15 @@ mod platform {
         pub fn clear_hover(&mut self, _hwnd: isize) {}
 
         pub fn source_hwnd_at_point(&self, _x: i32, _y: i32, _exclude: Option<isize>) -> Option<isize> {
+            None
+        }
+
+        pub fn source_hwnd_and_rect_at_point(
+            &self,
+            _x: i32,
+            _y: i32,
+            _exclude: Option<isize>,
+        ) -> Option<(isize, (i32, i32, i32, i32))> {
             None
         }
 

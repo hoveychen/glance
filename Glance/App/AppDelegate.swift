@@ -806,10 +806,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AccessibilityManager.shared.setReferenceFrame(windowID: refID, pid: refPID, cgFrame: refArea)
         }
 
-        // Cache slot centers for drag reordering (slots are already in AppKit coords)
-        lastSlotCenters = slots.map { slot in
-            (windowID: slot.windowID, center: CGPoint(x: slot.rect.midX, y: slot.rect.midY), screenIndex: slot.screenIndex)
+        // Cache slot rects for drag reordering (slots are already in AppKit coords)
+        lastSlotRects = slots.map { slot in
+            (windowID: slot.windowID, rect: slot.rect, screenIndex: slot.screenIndex)
         }
+
+        // Cache inputs for the lightweight drag relayout path.
+        cachedThumbnailInfos = thumbnailInfos
+        cachedScreenRegions = screenRegions
 
         // Dispatch slots and mark active / pinned windows
         let slotsByScreen = Dictionary(grouping: slots, by: \.screenIndex)
@@ -1116,8 +1120,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Drag Reorder
 
-    /// Tracks the last computed slot centers for insertion-point calculation.
-    private var lastSlotCenters: [(windowID: CGWindowID, center: CGPoint, screenIndex: Int)] = []
+    /// Tracks the last computed slot rects for insertion-point calculation.
+    private var lastSlotRects: [(windowID: CGWindowID, rect: CGRect, screenIndex: Int)] = []
+
+    /// Cached inputs for the lightweight drag relayout path. Refreshed at the
+    /// end of `handleWindowsUpdate` so `relayoutForDrag` can re-run the layout
+    /// engine without re-enumerating windows or touching AX / capture.
+    private var cachedThumbnailInfos: [WindowInfo] = []
+    private var cachedScreenRegions: [ScreenRegion] = []
+
+    /// Lightweight relayout used during drag reorder. Re-runs only the layout
+    /// engine with cached inputs and dispatches slots, skipping window
+    /// enumeration, Space queries, parking/constraint logic, and capture
+    /// scheduling — all of which are unchanged during a same-set reorder.
+    private func relayoutForDrag() {
+        guard isActive, !cachedThumbnailInfos.isEmpty, !cachedScreenRegions.isEmpty else { return }
+
+        let orderedInfos = windowOrder.compactMap { id in
+            cachedThumbnailInfos.first { $0.windowID == id }
+        }
+        let metrics = orderedInfos.map { info -> WindowMetrics in
+            let frameForRatio: CGRect
+            if info.windowID == currentMainWindowID {
+                frameForRatio = info.frame
+            } else if let orig = AccessibilityManager.shared.getOriginalFrame(for: info.windowID) {
+                frameForRatio = orig
+            } else {
+                frameForRatio = info.frame
+            }
+            let ratio: CGFloat = frameForRatio.height > 0
+                ? frameForRatio.width / frameForRatio.height
+                : 16.0 / 9.0
+            return WindowMetrics(
+                windowID: info.windowID,
+                aspectRatio: ratio,
+                originalScreenIndex: info.originalScreenIndex,
+                originalHeight: frameForRatio.height,
+                isManuallyAssigned: manualScreenAssignment.contains(info.windowID)
+            )
+        }
+
+        let slots = layoutEngine.layout(screens: cachedScreenRegions, windows: metrics)
+
+        lastSlotRects = slots.map { slot in
+            (windowID: slot.windowID, rect: slot.rect, screenIndex: slot.screenIndex)
+        }
+
+        let slotsByScreen = Dictionary(grouping: slots, by: \.screenIndex)
+        for (screenIdx, controller) in overlayControllers {
+            controller.updateSlots(slotsByScreen[screenIdx] ?? [], allWindows: cachedThumbnailInfos)
+        }
+    }
 
     private func handleDragMoved(windowID: CGWindowID, point: CGPoint) {
         guard let draggedIdx = windowOrder.firstIndex(of: windowID) else { return }
@@ -1127,30 +1180,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.draggingWindowID = windowID
         }
 
-        // Determine which screen the drag point is currently over
+        // Candidate slots on the SAME screen as the drag point, excluding the
+        // dragged window itself. Staying on one screen avoids confusing
+        // cross-screen shuffles while dragging.
         let dragScreenIdx = screenIndex(for: point)
+        let candidates = lastSlotRects.filter {
+            $0.windowID != windowID && $0.screenIndex == dragScreenIdx
+        }
+        guard !candidates.isEmpty else { return }
 
-        // Find the closest slot center on the SAME screen as the drag point.
-        // This prevents confusing cross-screen shuffles while dragging.
-        var bestTargetID: CGWindowID?
-        var bestDist: CGFloat = .infinity
-        for entry in lastSlotCenters {
-            if entry.windowID == windowID { continue }
-            if entry.screenIndex != dragScreenIdx { continue }
-            let dist = hypot(point.x - entry.center.x, point.y - entry.center.y)
-            if dist < bestDist {
-                bestDist = dist
-                bestTargetID = entry.windowID
+        // Pick the slot the pointer is over; otherwise the nearest slot by
+        // distance from the point to the rect (clamped to rect edges).
+        let target: (windowID: CGWindowID, rect: CGRect, screenIndex: Int) = {
+            if let hit = candidates.first(where: { $0.rect.contains(point) }) {
+                return hit
             }
+            return candidates.min { a, b in
+                Self.distance(from: point, to: a.rect) < Self.distance(from: point, to: b.rect)
+            }!
+        }()
+
+        // Decide whether the insertion gap is before or after the target slot.
+        // AppKit y grows upward, so "above the target" (larger y) means earlier
+        // in reading order; "below" means later. When the pointer is on the
+        // target's row, use the x midpoint.
+        let insertBefore: Bool
+        if point.y > target.rect.maxY {
+            insertBefore = true
+        } else if point.y < target.rect.minY {
+            insertBefore = false
+        } else {
+            insertBefore = point.x < target.rect.midX
         }
 
-        // If hovering over a different slot, swap in the order and relayout others
-        if let targetID = bestTargetID,
-           let targetIdx = windowOrder.firstIndex(of: targetID),
-           targetIdx != draggedIdx {
-            windowOrder.swapAt(draggedIdx, targetIdx)
-            windowTracker.forceUpdate()
-        }
+        guard let targetIdx = windowOrder.firstIndex(of: target.windowID) else { return }
+
+        // Compute the final index after removing the dragged element.
+        var desiredIdx = insertBefore ? targetIdx : targetIdx + 1
+        if draggedIdx < desiredIdx { desiredIdx -= 1 }
+
+        if desiredIdx == draggedIdx { return }
+
+        let moved = windowOrder.remove(at: draggedIdx)
+        windowOrder.insert(moved, at: desiredIdx)
+        // Use the lightweight path: during a reorder the window set and screen
+        // topology are unchanged, so skip window enumeration / AX / capture and
+        // just re-run the layout engine + dispatch slot positions.
+        relayoutForDrag()
+    }
+
+    private static func distance(from point: CGPoint, to rect: CGRect) -> CGFloat {
+        let dx = max(rect.minX - point.x, 0, point.x - rect.maxX)
+        let dy = max(rect.minY - point.y, 0, point.y - rect.maxY)
+        return hypot(dx, dy)
     }
 
     private func handleDragComplete(windowID: CGWindowID) {
