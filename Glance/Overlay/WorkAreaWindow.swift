@@ -35,6 +35,8 @@ private final class SplitDividerView: NSView {
     }
 }
 
+enum DropHintSide { case left, right }
+
 /// A draggable, resizable frosted-glass "desk" where the main window is placed.
 final class WorkAreaWindow: NSWindow {
 
@@ -135,6 +137,19 @@ final class WorkAreaWindow: NSWindow {
             unpinRightButton.bottomAnchor.constraint(equalTo: effectView.bottomAnchor, constant: -6)
         ])
 
+        // Drop hint overlay (hidden by default) — shown while dragging a
+        // thumbnail over the work area, so the user sees which half (left/right)
+        // the window would pin to on release.
+        dropHintView = NSView()
+        dropHintView.wantsLayer = true
+        dropHintView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        dropHintView.layer?.borderColor = NSColor.white.withAlphaComponent(0.35).cgColor
+        dropHintView.layer?.borderWidth = 2
+        dropHintView.layer?.cornerRadius = 10
+        dropHintView.isHidden = true
+        effectView.addSubview(dropHintView)
+        self.effectView = effectView
+
         // Left divider (hidden by default)
         leftDividerView = SplitDividerView()
         leftDividerView.isHidden = true
@@ -182,6 +197,9 @@ final class WorkAreaWindow: NSWindow {
     private var unpinRightButton: NSButton!
     private var leftDividerView: SplitDividerView!
     private var rightDividerView: SplitDividerView!
+    private weak var effectView: NSVisualEffectView?
+    private var dropHintView: NSView!
+    private var dropHintSide: DropHintSide?
 
     /// Fraction of the available (gap-subtracted) width allocated to the left reference panel.
     /// Only used when `leftReferenceActive == true`. Clamped in `clampRatios()`.
@@ -324,6 +342,32 @@ final class WorkAreaWindow: NSWindow {
         onSplitRatioChanged?()
     }
 
+    /// Show or hide the drop hint overlay. Pass `nil` to hide.
+    func updateDropHint(side: DropHintSide?) {
+        dropHintSide = side
+        guard let side else {
+            dropHintView.isHidden = true
+            return
+        }
+        dropHintView.isHidden = false
+        updateDropHintFrame(side: side)
+    }
+
+    private func updateDropHintFrame(side: DropHintSide) {
+        guard let effectView else { return }
+        let inset: CGFloat = 6
+        let bounds = effectView.bounds
+        let halfW = (bounds.width - inset * 3) / 2
+        let y = Self.paddingBottom
+        let h = bounds.height - Self.paddingTop - Self.paddingBottom
+        let x: CGFloat
+        switch side {
+        case .left:  x = inset
+        case .right: x = inset + halfW + inset
+        }
+        dropHintView.frame = CGRect(x: x, y: y, width: halfW, height: h)
+    }
+
     private func updateDividerPositions() {
         let usableW = frame.width - Self.paddingLeft - Self.paddingRight
         let available = availablePanelWidth(usableWidth: usableW)
@@ -351,6 +395,7 @@ final class WorkAreaWindow: NSWindow {
     override func setFrame(_ frameRect: NSRect, display flag: Bool) {
         super.setFrame(Self.clampToScreens(frameRect), display: flag)
         updateDividerPositions()
+        if let side = dropHintSide { updateDropHintFrame(side: side) }
     }
 
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {

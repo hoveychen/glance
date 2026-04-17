@@ -1267,6 +1267,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.draggingWindowID = windowID
         }
 
+        // Drop-hint: if the cursor is over the work area, highlight the half
+        // (left/right) that a release would pin to. Mirrors the midpoint rule
+        // used in handleDragComplete so the hint matches the actual outcome.
+        if let wa = workAreaWindow {
+            let mouse = NSEvent.mouseLocation
+            if wa.frame.contains(mouse) {
+                let side: DropHintSide = mouse.x < wa.frame.midX ? .left : .right
+                wa.updateDropHint(side: side)
+            } else {
+                wa.updateDropHint(side: nil)
+            }
+        }
+
         // Candidate slots on the SAME screen as the drag point, excluding the
         // dragged window itself. Staying on one screen avoids confusing
         // cross-screen shuffles while dragging.
@@ -1324,6 +1337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleDragComplete(windowID: CGWindowID) {
         let mouseLocation = NSEvent.mouseLocation  // AppKit coords
+        workAreaWindow?.updateDropHint(side: nil)
 
         // If dropped on the work area, pin as reference (skip if already pinned or is main).
         // Side is chosen by which half of the work area the drop landed on.
