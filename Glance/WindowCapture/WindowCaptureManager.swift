@@ -19,6 +19,19 @@ final class WindowCaptureManager {
     /// Capture interval (matches the previous 3 fps SCStream config).
     private let captureInterval: TimeInterval = 1.0 / 3.0
 
+    /// Dedicated serial queue for capture work. Using our own queue instead of
+    /// the global concurrent `.userInteractive` queue bounds our thread use to 1.
+    /// Why: `CGWindowListCreateImage` can block for seconds when WindowServer /
+    /// ScreenCaptureKit's XPC daemon stalls. With async dispatch onto the shared
+    /// concurrent pool, each timer tick spawned another blocked thread, saturating
+    /// libdispatch's 64-thread soft limit and hanging the whole app (quit included).
+    private let captureQueue = DispatchQueue(label: "com.hoveychen.Glance.capture", qos: .userInteractive)
+
+    /// True while a batch is in flight. Read/written only on the main thread.
+    /// Timer ticks that fire while a batch is still running are dropped, so a
+    /// slow capture never causes queue backlog.
+    private var isCapturing = false
+
     /// Update which windows are being captured.
     func updateCaptures(for windows: [WindowInfo], onFrame: @escaping (CGWindowID, CGImage) -> Void) {
         self.frameCallback = onFrame
@@ -53,6 +66,10 @@ final class WindowCaptureManager {
     }
 
     private func captureAllWindows() {
+        // Drop this tick if the previous batch hasn't finished — avoids piling
+        // up work on the capture queue when WindowServer stalls.
+        if isCapturing { return }
+
         // Snapshot the info we need on the main thread to avoid data races.
         // WindowInfo is a reference type whose properties may be mutated on
         // the main thread by WindowTracker while we read on a background queue.
@@ -61,7 +78,11 @@ final class WindowCaptureManager {
                 (windowID, info.isPrivateBrowsing, info.displayName, info.frame.width, info.frame.height, info.isOnScreen)
             }
 
-        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+        isCapturing = true
+        captureQueue.async { [weak self] in
+            defer {
+                DispatchQueue.main.async { self?.isCapturing = false }
+            }
             for snap in snapshots {
                 // Skip private/incognito windows to avoid the macOS
                 // "trying to record a private browsing window" alert.

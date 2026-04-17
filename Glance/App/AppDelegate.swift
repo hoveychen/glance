@@ -236,6 +236,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action: #selector(copyDiagnostics),
             keyEquivalent: ""
         ))
+        appMenu.addItem(NSMenuItem(
+            title: "Dump System Sample…",
+            action: #selector(dumpSystemSample),
+            keyEquivalent: ""
+        ))
         appMenu.addItem(NSMenuItem.separator())
 
         appMenu.addItem(NSMenuItem(
@@ -289,6 +294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Copy Diagnostics", action: #selector(copyDiagnostics), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Dump System Sample…", action: #selector(dumpSystemSample), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
         statusItem.menu = menu
@@ -1640,5 +1646,102 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    /// Menu action: capture `sample` output for Glance + relevant system
+    /// daemons, so we can diagnose capture-pipeline stalls (e.g. the 64-thread
+    /// libdispatch saturation from `SLSWindowListCreateImageProxying`). Runs
+    /// out-of-process so it works even while our capture pipeline is hung.
+    @objc private func dumpSystemSample() {
+        let ts = Self.diagTimestampFormatter.string(from: Date())
+        let dirURL = URL(fileURLWithPath: "/tmp/glance-diag-\(ts)")
+        do {
+            try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
+        } catch {
+            logger.error("dumpSystemSample: mkdir failed: \(error.localizedDescription, privacy: .public)")
+            let a = NSAlert()
+            a.messageText = "Could not create diagnostic folder"
+            a.informativeText = error.localizedDescription
+            a.alertStyle = .warning
+            a.addButton(withTitle: "OK")
+            a.runModal()
+            return
+        }
+
+        logger.warning("dumpSystemSample: starting, output=\(dirURL.path, privacy: .public)")
+
+        // The snapshot is instant; write it first so the folder is never empty.
+        let snapshotPath = dirURL.appendingPathComponent("diagnostic-snapshot.txt").path
+        try? diagnosticSnapshot().write(toFile: snapshotPath, atomically: true, encoding: .utf8)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let group = DispatchGroup()
+
+            // `sample` writes to `-f` itself; we only need to wait for it.
+            // Same-uid processes (Glance, replayd) work without sudo.
+            // WindowServer runs as _windowserver so we can't sample it here;
+            // users who need that can run `sudo sample WindowServer` manually.
+            Self.runTool(
+                "/usr/bin/sample",
+                ["Glance", "3", "-f", dirURL.appendingPathComponent("glance.txt").path],
+                group: group
+            )
+            Self.runTool(
+                "/usr/bin/sample",
+                ["replayd", "3", "-f", dirURL.appendingPathComponent("replayd.txt").path],
+                group: group
+            )
+            Self.runTool(
+                "/usr/bin/log",
+                ["show", "--last", "120s", "--predicate",
+                 "subsystem CONTAINS \"ScreenCaptureKit\" OR subsystem CONTAINS \"com.apple.windowserver\" OR process == \"replayd\" OR process == \"WindowServer\""],
+                stdoutPath: dirURL.appendingPathComponent("system-log.txt").path,
+                group: group
+            )
+
+            group.wait()
+            logger.warning("dumpSystemSample: finished")
+
+            DispatchQueue.main.async {
+                NSWorkspace.shared.activateFileViewerSelecting([dirURL])
+                let alert = NSAlert()
+                alert.messageText = "System sample captured"
+                alert.informativeText = "Saved to:\n\(dirURL.path)\n\nContents:\n• glance.txt — sample of Glance\n• replayd.txt — sample of ScreenCaptureKit daemon\n• system-log.txt — last 2 min of WindowServer / ScreenCaptureKit log\n• diagnostic-snapshot.txt — Glance internal state\n\nAttach all four files to the bug report."
+                alert.alertStyle = .informational
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
+        }
+    }
+
+    private static let diagTimestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        return f
+    }()
+
+    /// Runs a child tool asynchronously on a background queue, optionally
+    /// redirecting stdout/stderr to a file. Signals `group` on completion.
+    private static func runTool(_ launchPath: String, _ args: [String], stdoutPath: String? = nil, group: DispatchGroup) {
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { group.leave() }
+            let p = Process()
+            p.launchPath = launchPath
+            p.arguments = args
+            if let stdoutPath {
+                FileManager.default.createFile(atPath: stdoutPath, contents: nil)
+                if let fh = FileHandle(forWritingAtPath: stdoutPath) {
+                    p.standardOutput = fh
+                    p.standardError = fh
+                }
+            }
+            do {
+                try p.run()
+                p.waitUntilExit()
+            } catch {
+                logger.error("runTool \(launchPath, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 }
