@@ -151,6 +151,10 @@ final class ThumbnailWindow: NSWindow {
         thumbnailView.showHintPinIcon()
     }
 
+    func updateMRUGlow(rank: Int?) {
+        thumbnailView.updateMRUGlow(rank: rank)
+    }
+
     func animateTo(frame newFrame: CGRect, duration: TimeInterval = 0.15) {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration

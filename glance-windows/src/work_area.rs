@@ -591,25 +591,25 @@ mod platform {
         SetTextColor(hdc, COLORREF(0x00CCCCCC));
 
         let mut exit_rc = exit_button_rect(client);
-        let mut exit_text = wide("\u{2715} Exit");
+        let mut exit_text = wide(crate::strings::t("work_area.exit"));
         DrawTextW(hdc, &mut exit_text, &mut exit_rc,
             DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
         let mut switch_rc = switch_button_rect(client);
-        let mut switch_text = wide("\u{21E5} Switch (Alt)");
+        let mut switch_text = wide(crate::strings::t("work_area.switch"));
         DrawTextW(hdc, &mut switch_text, &mut switch_rc,
             DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
         if !state_ptr.is_null() {
             if (*state_ptr).left_reference_active {
                 let mut rc = unpin_left_button_rect(client);
-                let mut t = wide("\u{2715} Unpin L");
+                let mut t = wide(crate::strings::t("work_area.unpin_left"));
                 DrawTextW(hdc, &mut t, &mut rc,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
             if (*state_ptr).right_reference_active {
                 let mut rc = unpin_right_button_rect(client);
-                let mut t = wide("\u{2715} Unpin R");
+                let mut t = wide(crate::strings::t("work_area.unpin_right"));
                 DrawTextW(hdc, &mut t, &mut rc,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
@@ -621,7 +621,7 @@ mod platform {
             right: client.right,
             bottom: client.bottom,
         };
-        let mut label_text = wide("Work Area");
+        let mut label_text = wide(crate::strings::t("work_area.label"));
         DrawTextW(hdc, &mut label_text, &mut label_rc,
             DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 

@@ -6,6 +6,8 @@ pub mod input;
 mod layout;
 mod monitor;
 pub mod overlay;
+pub mod strings;
+pub mod swap_resize;
 pub mod thumbnail_manager;
 pub mod tray;
 mod types;

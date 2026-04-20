@@ -53,8 +53,10 @@ mod platform {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
-        BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW,
-        EndPaint, FillRect, FrameRect, InvalidateRect, SelectObject, SetBkMode, SetTextColor,
+        AlphaBlend, BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateFontW,
+        CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect,
+        InvalidateRect, SelectObject, SetBkMode, SetTextColor,
+        AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BLENDFUNCTION, DIB_RGB_COLORS,
         PAINTSTRUCT, TRANSPARENT, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE,
         DT_VCENTER, DT_CENTER, FW_BOLD, FW_NORMAL,
     };
@@ -140,6 +142,7 @@ mod platform {
     const COLOR_BORDER_HOVER: u32 = rgb(33, 150, 243);    // blue
     const COLOR_HINT_BG: u32 = rgb(255, 235, 59);         // yellow
     const COLOR_DIM_OVERLAY: u32 = rgb(0, 0, 0);          // dim overlay (semi-transparent black)
+    const COLOR_MRU_GLOW: u32 = rgb(255, 193, 7);         // amber — recency halo
 
     // -----------------------------------------------------------------------
     // Per-window state stored via GWLP_USERDATA
@@ -172,6 +175,8 @@ mod platform {
         // Visual state
         visual_state: OverlayVisualState,
         hint_char: Option<String>,
+        /// MRU recency rank: 0 = newest, 1 = middle, 2 = oldest. None = no glow.
+        mru_rank: Option<u8>,
     }
 
     // -----------------------------------------------------------------------
@@ -556,10 +561,10 @@ mod platform {
         // --- Active/Pinned dim overlay + label ---
         match state.visual_state {
             OverlayVisualState::Active => {
-                paint_dim_overlay(hdc, &client_rect, "Active", COLOR_BORDER_ACTIVE);
+                paint_dim_overlay(hdc, &client_rect, crate::strings::t("overlay.active"), COLOR_BORDER_ACTIVE);
             }
             OverlayVisualState::Pinned => {
-                paint_dim_overlay(hdc, &client_rect, "Pinned", COLOR_BORDER_PINNED);
+                paint_dim_overlay(hdc, &client_rect, crate::strings::t("overlay.pinned"), COLOR_BORDER_PINNED);
             }
             _ => {}
         }
@@ -576,6 +581,13 @@ mod platform {
                 paint_border(hdc, &client_rect, COLOR_BORDER_HOVER, 3);
             }
             OverlayVisualState::Normal => {}
+        }
+
+        // --- MRU recency glow ---
+        // Painted last so it takes visual precedence over active/pinned
+        // borders when both apply. Brightness decreases by rank.
+        if let Some(rank) = state.mru_rank {
+            paint_mru_glow(hdc, &client_rect, rank);
         }
 
         // --- Pin buttons (visible on hover, hidden in hint mode) ---
@@ -681,6 +693,122 @@ mod platform {
 
         SelectObject(hdc, old_font);
         let _ = DeleteObject(font);
+    }
+
+    /// Paint the MRU recency halo as a soft alpha-blended ring inset from the
+    /// overlay edge. Uses a premultiplied 32-bit DIB as the source, with a
+    /// linear falloff from full alpha at the edge to zero alpha inward.
+    /// The per-rank brightness is applied via BLENDFUNCTION.SourceConstantAlpha.
+    unsafe fn paint_mru_glow(
+        hdc: windows::Win32::Graphics::Gdi::HDC,
+        rect: &RECT,
+        rank: u8,
+    ) {
+        // Per-rank uniform brightness scaling via AlphaBlend's constant alpha.
+        let source_constant_alpha: u8 = match rank {
+            0 => 255,       // newest — 100%
+            1 => 153,       // ~60%
+            2 => 77,        // ~30%
+            _ => return,
+        };
+
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        if width <= 0 || height <= 0 {
+            return;
+        }
+
+        // Halo width in pixels: the outer `HALO_WIDTH` pixels of the client
+        // rect form the ring, alpha fading from 255 at the edge to 0 inward.
+        const HALO_WIDTH: i32 = 8;
+
+        let mut bmi = BITMAPINFO::default();
+        bmi.bmiHeader.biSize = mem::size_of::<
+            windows::Win32::Graphics::Gdi::BITMAPINFOHEADER,
+        >() as u32;
+        bmi.bmiHeader.biWidth = width;
+        bmi.bmiHeader.biHeight = -height; // top-down
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB.0;
+
+        let mut bits_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
+        let dib = match CreateDIBSection(
+            hdc,
+            &bmi,
+            DIB_RGB_COLORS,
+            &mut bits_ptr,
+            windows::Win32::Foundation::HANDLE(core::ptr::null_mut()),
+            0,
+        ) {
+            Ok(h) => h,
+            Err(_) => return,
+        };
+        if bits_ptr.is_null() {
+            let _ = DeleteObject(dib);
+            return;
+        }
+
+        let mem_dc = CreateCompatibleDC(hdc);
+        if mem_dc.is_invalid() {
+            let _ = DeleteObject(dib);
+            return;
+        }
+        let old_bmp = SelectObject(mem_dc, dib);
+
+        // Fill the DIB: 32-bit BGRA, premultiplied alpha.
+        let pixels = bits_ptr as *mut u32;
+        let total = (width * height) as usize;
+        core::ptr::write_bytes(pixels, 0, total);
+
+        // COLOR_MRU_GLOW uses COLORREF byte order (low byte = R, ...).
+        let fg_r = (COLOR_MRU_GLOW & 0xFF) as u32;
+        let fg_g = ((COLOR_MRU_GLOW >> 8) & 0xFF) as u32;
+        let fg_b = ((COLOR_MRU_GLOW >> 16) & 0xFF) as u32;
+
+        for y in 0..height {
+            for x in 0..width {
+                let d_edge = x.min(y).min(width - 1 - x).min(height - 1 - y);
+                if d_edge >= HALO_WIDTH {
+                    continue;
+                }
+                // Linear falloff: outer edge -> alpha 255, inner edge -> 0.
+                let a = 255 - (d_edge * 255 / HALO_WIDTH);
+                let au = a as u32;
+                let pb = fg_b * au / 255;
+                let pg = fg_g * au / 255;
+                let pr = fg_r * au / 255;
+                // Top-down DIB pixel: 0xAARRGGBB in little-endian byte order
+                // becomes B,G,R,A bytes — which is the required layout.
+                let pixel = (au << 24) | (pr << 16) | (pg << 8) | pb;
+                *pixels.add((y * width + x) as usize) = pixel;
+            }
+        }
+
+        let blend = BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: source_constant_alpha,
+            AlphaFormat: AC_SRC_ALPHA as u8,
+        };
+
+        let _ = AlphaBlend(
+            hdc,
+            rect.left,
+            rect.top,
+            width,
+            height,
+            mem_dc,
+            0,
+            0,
+            width,
+            height,
+            blend,
+        );
+
+        SelectObject(mem_dc, old_bmp);
+        let _ = DeleteObject(dib);
+        let _ = DeleteDC(mem_dc);
     }
 
     /// Paint a border of the given color and thickness around the window.
@@ -851,6 +979,7 @@ mod platform {
                     is_mouse_inside: false,
                     visual_state: OverlayVisualState::Normal,
                     hint_char: None,
+                    mru_rank: None,
                 });
                 let state_ptr = Box::into_raw(state);
 
@@ -936,6 +1065,21 @@ mod platform {
                     return;
                 }
                 (*self.state_ptr).visual_state = visual_state;
+                self.invalidate();
+            }
+        }
+
+        /// Set or clear the MRU recency rank. `Some(0..=2)` shows the glow at
+        /// the corresponding brightness; `None` hides it.
+        pub fn set_mru_rank(&mut self, rank: Option<u8>) {
+            if self.state_ptr.is_null() {
+                return;
+            }
+            unsafe {
+                if (*self.state_ptr).mru_rank == rank {
+                    return;
+                }
+                (*self.state_ptr).mru_rank = rank;
                 self.invalidate();
             }
         }
@@ -1203,6 +1347,23 @@ mod platform {
             mapping
         }
 
+        /// Apply MRU recency ranks to overlays. `mru_list` is ordered newest
+        /// first (index 0 = rank 0). Overlays whose source hwnd is absent
+        /// from the list have their glow cleared.
+        pub fn apply_mru_ranks(&mut self, mru_list: &[isize], enabled: bool) {
+            for (&hwnd, overlay) in self.overlays.iter_mut() {
+                let rank = if enabled {
+                    mru_list
+                        .iter()
+                        .position(|&h| h == hwnd)
+                        .map(|i| i as u8)
+                } else {
+                    None
+                };
+                overlay.set_mru_rank(rank);
+            }
+        }
+
         /// Hide all hint badges.
         pub fn hide_hints(&mut self) {
             for overlay in self.overlays.values_mut() {
@@ -1356,6 +1517,7 @@ mod platform {
         pub fn set_title(&mut self, _title: &str) {}
         pub fn set_visual_state(&mut self, _state: OverlayVisualState) {}
         pub fn set_hint(&mut self, _hint: Option<String>) {}
+        pub fn set_mru_rank(&mut self, _rank: Option<u8>) {}
         pub fn hide(&self) {}
         pub fn show(&self) {}
         pub fn destroy(&mut self) {}
@@ -1399,6 +1561,8 @@ mod platform {
         }
 
         pub fn hide_hints(&mut self) {}
+
+        pub fn apply_mru_ranks(&mut self, _mru_list: &[isize], _enabled: bool) {}
 
         pub fn hide_all(&mut self) {}
 

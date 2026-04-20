@@ -153,6 +153,18 @@ final class OverlayWindowController {
         }
     }
 
+    /// Apply MRU glow ranks to thumbnails. `mruList` is ordered newest-first.
+    /// Thumbnails not in the list have their glow cleared.
+    func updateMRUGlow(mruList: [CGWindowID], enabled: Bool) {
+        for (id, window) in thumbnailWindows {
+            if enabled, let rank = mruList.firstIndex(of: id) {
+                window.updateMRUGlow(rank: rank)
+            } else {
+                window.updateMRUGlow(rank: nil)
+            }
+        }
+    }
+
     func thumbnailUpdated(windowID: CGWindowID) {
         guard let thumbWindow = thumbnailWindows[windowID],
               let info = thumbWindow.thumbnailView,

@@ -221,29 +221,14 @@ final class AccessibilityManager {
             originalFrames[windowID] = currentFrame
         }
 
-        // Calculate target size: fit within work area, preserving aspect ratio
-        let winW = windowFrame.width
-        let winH = windowFrame.height
-        var targetW = winW
-        var targetH = winH
+        let target = computeSwapTargetFrame(
+            windowSize: windowFrame.size,
+            workArea: workAreaCG,
+            mode: Settings.shared.swapResizeMode
+        )
 
-        if targetW > workAreaCG.width {
-            let scale = workAreaCG.width / targetW
-            targetW *= scale
-            targetH *= scale
-        }
-        if targetH > workAreaCG.height {
-            let scale = workAreaCG.height / targetH
-            targetW *= scale
-            targetH *= scale
-        }
-
-        // Center in work area (CG coords: top-left origin)
-        let targetX = workAreaCG.origin.x + (workAreaCG.width - targetW) / 2
-        let targetY = workAreaCG.origin.y + (workAreaCG.height - targetH) / 2
-
-        var position = CGPoint(x: targetX, y: targetY)
-        var size = CGSize(width: targetW, height: targetH)
+        var position = CGPoint(x: target.origin.x, y: target.origin.y)
+        var size = CGSize(width: target.width, height: target.height)
 
         if let posValue = AXValueCreate(.cgPoint, &position) {
             AXUIElementSetAttributeValue(axWin, kAXPositionAttribute as CFString, posValue)
@@ -416,23 +401,19 @@ final class AccessibilityManager {
         if let target = targetFrame {
             frame = target
         } else {
-            // Fit original size into work area, centered
+            // Fit original size into work area per the user's swap-resize mode,
+            // matching moveToWorkArea's behavior so settings apply uniformly to
+            // both swap entry paths (real screen vs. virtual display).
             let origFrame = originalFrames[windowID]
-            var w = origFrame?.width ?? workAreaCG.width
-            var h = origFrame?.height ?? workAreaCG.height
-
-            if w > workAreaCG.width {
-                let scale = workAreaCG.width / w
-                w *= scale; h *= scale
-            }
-            if h > workAreaCG.height {
-                let scale = workAreaCG.height / h
-                w *= scale; h *= scale
-            }
-
-            let x = workAreaCG.origin.x + (workAreaCG.width - w) / 2
-            let y = workAreaCG.origin.y + (workAreaCG.height - h) / 2
-            frame = CGRect(x: x, y: y, width: w, height: h)
+            let nativeSize = CGSize(
+                width: origFrame?.width ?? workAreaCG.width,
+                height: origFrame?.height ?? workAreaCG.height
+            )
+            frame = computeSwapTargetFrame(
+                windowSize: nativeSize,
+                workArea: workAreaCG,
+                mode: Settings.shared.swapResizeMode
+            )
         }
 
         var position = CGPoint(x: frame.origin.x, y: frame.origin.y)

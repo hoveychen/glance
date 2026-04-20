@@ -74,7 +74,10 @@ final class WorkAreaWindow: NSWindow {
         effectView.autoresizingMask = [.width, .height]
         contentView?.addSubview(effectView)
 
-        let label = NSTextField(labelWithString: "Work Area")
+        let label = NSTextField(labelWithString:
+            NSLocalizedString("workArea.label",
+                              value: "Work Area",
+                              comment: "Faint centered label on the work area floating window"))
         label.font = .systemFont(ofSize: 11, weight: .medium)
         label.textColor = NSColor.white.withAlphaComponent(0.3)
         label.alignment = .center
@@ -85,7 +88,11 @@ final class WorkAreaWindow: NSWindow {
             label.bottomAnchor.constraint(equalTo: effectView.bottomAnchor, constant: -8)
         ])
 
-        let exitButton = NSButton(title: "✕ Exit", target: self, action: #selector(exitClicked))
+        let exitButton = NSButton(title:
+            NSLocalizedString("workArea.exit",
+                              value: "✕ Exit",
+                              comment: "Work area bottom-left button: exit/close the work area"),
+                                  target: self, action: #selector(exitClicked))
         exitButton.bezelStyle = .recessed
         exitButton.isBordered = false
         exitButton.font = .systemFont(ofSize: 11, weight: .medium)
@@ -98,7 +105,11 @@ final class WorkAreaWindow: NSWindow {
         ])
 
         // Unpin-left button (hidden by default) — bottom-left, next to Exit
-        unpinLeftButton = NSButton(title: "✕ Unpin Left", target: self, action: #selector(unpinLeftClicked))
+        unpinLeftButton = NSButton(title:
+            NSLocalizedString("workArea.unpinLeft",
+                              value: "✕ Unpin Left",
+                              comment: "Work area button: unpin the left reference window"),
+                                   target: self, action: #selector(unpinLeftClicked))
         unpinLeftButton.bezelStyle = .recessed
         unpinLeftButton.isBordered = false
         unpinLeftButton.font = .systemFont(ofSize: 11, weight: .medium)
@@ -111,7 +122,11 @@ final class WorkAreaWindow: NSWindow {
             unpinLeftButton.bottomAnchor.constraint(equalTo: effectView.bottomAnchor, constant: -6)
         ])
 
-        let switchButton = NSButton(title: "⇥ Switch (⌥)", target: self, action: #selector(switchClicked))
+        let switchButton = NSButton(title:
+            NSLocalizedString("workArea.quickSwitch",
+                              value: "⇥ Switch (⌥)",
+                              comment: "Work area bottom-right button: quick-switch between windows via Option key"),
+                                    target: self, action: #selector(switchClicked))
         switchButton.bezelStyle = .recessed
         switchButton.isBordered = false
         switchButton.font = .systemFont(ofSize: 11, weight: .medium)
@@ -124,7 +139,11 @@ final class WorkAreaWindow: NSWindow {
         ])
 
         // Unpin-right button (hidden by default) — bottom-right, left of Switch
-        unpinRightButton = NSButton(title: "✕ Unpin Right", target: self, action: #selector(unpinRightClicked))
+        unpinRightButton = NSButton(title:
+            NSLocalizedString("workArea.unpinRight",
+                              value: "✕ Unpin Right",
+                              comment: "Work area button: unpin the right reference window"),
+                                    target: self, action: #selector(unpinRightClicked))
         unpinRightButton.bezelStyle = .recessed
         unpinRightButton.isBordered = false
         unpinRightButton.font = .systemFont(ofSize: 11, weight: .medium)

@@ -1,0 +1,112 @@
+/* Settings window */
+"settings.window.title"            = "设置";
+"settings.window.titleWithPanel"   = "设置 — %@";
+"settings.panel.general"           = "通用";
+"settings.panel.window"            = "窗口";
+
+/* General panel */
+"settings.general.startup.header"         = "启动";
+"settings.general.launchAtLogin"          = "登录时启动 Glance";
+"settings.general.launchAtLogin.hint"     = "登录系统时自动启动 Glance。也可在 系统设置 → 通用 → 登录项 中管理。";
+"settings.general.appearance.header"      = "外观";
+"settings.general.showDockIcon"           = "在程序坞中显示 Glance 图标";
+"settings.general.showDockIcon.hint"      = "关闭后 Glance 以菜单栏应用形式运行，仍可通过状态栏图标访问。";
+"settings.general.language.header"        = "语言";
+"settings.general.language.label"         = "显示语言：";
+"settings.general.language.hint"          = "重启 Glance 后生效。";
+"settings.general.language.restart.title" = "立即重启 Glance 以应用新语言？";
+"settings.general.language.restart.body"  = "下次启动 Glance 时界面将切换到所选语言。";
+"settings.general.language.restart.now"   = "立即重启";
+"settings.general.language.restart.later" = "稍后";
+
+/* Language override options */
+"language.system"            = "跟随系统";
+"language.english"           = "English";
+"language.simplifiedChinese" = "简体中文";
+
+/* Window panel */
+"settings.window.swapResize.header"        = "交换缩放行为";
+"settings.window.swapResize.explain"       = "当一个窗口被交换进 Glance 工作区，且尺寸大于工作区时，选择 Glance 如何让它适配。";
+"settings.window.swapResize.preserve.hint" = "等比缩小窗口至可容纳，保持原始比例。建议大多数应用使用。";
+"settings.window.swapResize.clamp.hint"    = "分别裁剪宽高到工作区尺寸。当某些应用在工作区全尺寸下表现更好、而缩放后表现变差时适用。";
+
+/* Swap resize radio titles */
+"swapResize.preserveAspectRatio" = "保持宽高比";
+"swapResize.clampMax"            = "分别限制最大宽/高";
+
+/* MRU glow (recent thumbnail highlight) */
+"settings.window.mruGlow.header" = "最近缩略图高亮";
+"settings.window.mruGlow.toggle" = "高亮最近使用的缩略图";
+"settings.window.mruGlow.hint"   = "在最近点击、拖动或钉住的 3 张缩略图周围添加黄色光晕。最新的最亮，越旧越暗。在窗口较多时帮助快速定位刚才正在处理的窗口。";
+
+/* Main menu + status bar menu */
+"menu.aboutGlanceFormat"  = "关于 Glance %1$@（%2$@）";
+"menu.toggleGlance.full"  = "切换 Glance  \U2303\U2325H";
+"menu.toggleGlance.short" = "切换（\U2303\U2325H）";
+"menu.showGuide"          = "显示引导";
+"menu.checkForUpdates"    = "检查更新…";
+"menu.settings"           = "设置…";
+"menu.copyDiagnostics"    = "拷贝诊断信息";
+"menu.dumpSystemSample"   = "导出系统采样…";
+"menu.hideGlance"         = "隐藏 Glance";
+"menu.hideOthers"         = "隐藏其他";
+"menu.showAll"            = "全部显示";
+"menu.quitGlance"         = "退出 Glance";
+"menu.quit"               = "退出";
+
+/* Work area surface (work-area floating window) */
+"workArea.label"       = "工作区";
+"workArea.exit"        = "✕ 退出";
+"workArea.unpinLeft"   = "✕ 取消左侧固定";
+"workArea.unpinRight"  = "✕ 取消右侧固定";
+"workArea.quickSwitch" = "⇥ 切换 (\U2325)";
+
+/* Thumbnail pin accessibility labels */
+"thumbnail.pinLeft.accessibility"  = "固定为左侧参考";
+"thumbnail.pinRight.accessibility" = "固定为右侧参考";
+
+/* Onboarding — permission phase */
+"onboarding.welcome.title"                        = "欢迎使用 Glance";
+"onboarding.welcome.subtitle"                     = "请授予以下权限后开始使用。";
+"onboarding.permission.accessibility.name"        = "辅助功能";
+"onboarding.permission.accessibility.detail"      = "用于移动和调整窗口大小";
+"onboarding.permission.screenRecording.name"      = "屏幕录制";
+"onboarding.permission.screenRecording.detail"    = "用于捕获窗口缩略图";
+"onboarding.granted"                              = "已授权";
+"onboarding.notGranted"                           = "未授权";
+"onboarding.openSettings"                         = "打开设置";
+"onboarding.continue"                             = "继续";
+
+/* Onboarding — guide cards */
+"onboarding.skip"                          = "跳过";
+"onboarding.stepFormat"                    = "第 %1$d 步，共 %2$d 步";
+"onboarding.step.move.title"               = "移动工作区";
+"onboarding.step.move.message"             = "拖动工作区改变它的位置。\n现在试试看！";
+"onboarding.step.resize.title"             = "调整工作区大小";
+"onboarding.step.resize.message"           = "拖动工作区的任意边缘\n来调整它的大小。试试看！";
+"onboarding.step.switch.title"             = "切换窗口";
+"onboarding.step.switch.message"           = "点击工作区周围的任意缩略图\n即可将该窗口切换到最前。";
+"onboarding.step.quickSwitch.title"        = "快捷切换";
+"onboarding.step.quickSwitch.message"      = "按下 Option 键（\U2325）以显示\n快捷切换的键盘提示。";
+
+/* Update checker */
+"update.checkFailed.title"            = "检查更新失败";
+"update.checkFailed.network"          = "无法连接到 GitHub。\n%@";
+"update.checkFailed.parse"            = "无法解析来自 GitHub 的发布信息。";
+"update.upToDate.title"               = "已是最新版本";
+"update.upToDate.bodyFormat"          = "Glance %@ 已是最新版本。";
+"update.available.title"              = "有新版本可用";
+"update.available.bodyFormat"         = "Glance %1$@ 已发布，当前运行版本为 %2$@。";
+"update.available.releaseNotesFormat" = "\n\n更新日志：\n%@";
+"update.button.download"              = "下载";
+"update.button.later"                 = "稍后";
+
+/* Diagnostics alerts */
+"diagnostics.copied.title"              = "已将诊断信息拷贝到剪贴板";
+"diagnostics.copied.bodyFormat"         = "请粘贴到错误报告中。（%d 个字符）";
+"diagnostics.folderCreateFailed.title"  = "无法创建诊断文件夹";
+"diagnostics.sample.title"              = "系统采样已完成";
+"diagnostics.sample.bodyFormat"         = "已保存到：\n%@\n\n内容：\n• glance.txt — Glance 进程采样\n• replayd.txt — ScreenCaptureKit 守护进程采样\n• system-log.txt — 最近 2 分钟的 WindowServer / ScreenCaptureKit 日志\n• diagnostic-snapshot.txt — Glance 内部状态\n\n请将这 4 个文件一并附加到错误报告。";
+
+/* Shared buttons */
+"common.ok" = "好";

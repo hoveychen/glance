@@ -29,6 +29,7 @@ final class ThumbnailView: NSView {
     /// Fires when the pin-right button is clicked.
     var onPinRightClicked: (() -> Void)?
 
+    private let mruGlowLayer = CALayer()
     private let imageLayer = CALayer()
     private let iconLayer = CALayer()
     private let labelLayer = CATextLayer()
@@ -73,6 +74,18 @@ final class ThumbnailView: NSView {
             .fileURL, .URL, .string,
             NSPasteboard.PasteboardType("NSFilenamesPboardType"),
         ])
+
+        // MRU recency halo — sits BEHIND imageLayer so it peeks out as a ring.
+        // Alpha modulated by rank via updateMRUGlow(rank:).
+        mruGlowLayer.backgroundColor = NSColor.systemYellow.cgColor
+        mruGlowLayer.cornerRadius = 14
+        mruGlowLayer.shadowColor = NSColor.systemYellow.cgColor
+        mruGlowLayer.shadowOpacity = 0.9
+        mruGlowLayer.shadowRadius = 10
+        mruGlowLayer.shadowOffset = .zero
+        mruGlowLayer.isHidden = true
+        mruGlowLayer.opacity = 0
+        layer?.addSublayer(mruGlowLayer)
 
         // Thumbnail image
         imageLayer.contentsGravity = .resizeAspect
@@ -135,14 +148,18 @@ final class ThumbnailView: NSView {
         // "rectangle.lefthalf.filled" visually represents pinning to the left slot.
         pinLeftButton = Self.makePinButton(
             symbol: "rectangle.lefthalf.filled",
-            accessibility: "Pin as Left Reference",
+            accessibility: NSLocalizedString("thumbnail.pinLeft.accessibility",
+                                             value: "Pin as Left Reference",
+                                             comment: "VoiceOver label for the thumbnail hover button that pins the window to the left reference slot"),
             target: self, action: #selector(pinLeftButtonClicked)
         )
         addSubview(pinLeftButton)
 
         pinRightButton = Self.makePinButton(
             symbol: "rectangle.righthalf.filled",
-            accessibility: "Pin as Right Reference",
+            accessibility: NSLocalizedString("thumbnail.pinRight.accessibility",
+                                             value: "Pin as Right Reference",
+                                             comment: "VoiceOver label for the thumbnail hover button that pins the window to the right reference slot"),
             target: self, action: #selector(pinRightButtonClicked)
         )
         addSubview(pinRightButton)
@@ -211,6 +228,10 @@ final class ThumbnailView: NSView {
         let hH = Self.headerHeight
         let imageRect = CGRect(x: 0, y: 0, width: bounds.width, height: bounds.height - hH)
         imageLayer.frame = imageRect
+
+        // Halo extends ~4pt beyond the image rect on all sides.
+        let glowInset: CGFloat = 4
+        mruGlowLayer.frame = imageRect.insetBy(dx: -glowInset, dy: -glowInset)
 
         // Icon + label above the image, left-aligned
         let iconSize: CGFloat = 28
@@ -355,6 +376,23 @@ final class ThumbnailView: NSView {
         } else if let image = windowInfo?.latestImage {
             imageLayer.contents = image
         }
+    }
+
+    /// Show or hide the MRU recency halo. `rank` is the position in the MRU
+    /// list: 0 = newest (full brightness), 1 = middle, 2 = oldest, nil = hide.
+    func updateMRUGlow(rank: Int?) {
+        let alpha: Float
+        switch rank {
+        case 0: alpha = 1.0
+        case 1: alpha = 0.6
+        case 2: alpha = 0.3
+        default: alpha = 0.0
+        }
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.2)
+        mruGlowLayer.opacity = alpha
+        mruGlowLayer.isHidden = (alpha == 0)
+        CATransaction.commit()
     }
 
     func showHint(_ character: String) {

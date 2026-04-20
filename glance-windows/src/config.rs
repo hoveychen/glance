@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use crate::swap_resize::SwapResizeMode;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Left-reference split ratio in [0.15, 0.5].
@@ -19,10 +21,18 @@ pub struct Config {
     /// Last work-area frame as (x, y, width, height). None before first save.
     #[serde(default)]
     pub work_area_frame: Option<(f64, f64, f64, f64)>,
+    /// How to fit a window swapped into the work area when oversized.
+    #[serde(default)]
+    pub swap_resize_mode: SwapResizeMode,
+    /// Highlight the 3 most recently-interacted thumbnails with a yellow halo,
+    /// brightness decreasing by recency. Default: true.
+    #[serde(default = "default_mru_glow")]
+    pub mru_glow_enabled: bool,
 }
 
 fn default_left_split() -> f64 { 0.25 }
 fn default_right_split() -> f64 { 0.30 }
+fn default_mru_glow() -> bool { true }
 
 impl Default for Config {
     fn default() -> Self {
@@ -30,6 +40,8 @@ impl Default for Config {
             left_split_ratio: default_left_split(),
             right_split_ratio: default_right_split(),
             work_area_frame: None,
+            swap_resize_mode: SwapResizeMode::default(),
+            mru_glow_enabled: default_mru_glow(),
         }
     }
 }

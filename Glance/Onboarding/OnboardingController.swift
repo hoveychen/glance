@@ -28,6 +28,17 @@ final class OnboardingController: NSObject {
     // MARK: - Guide Phase
 
     private static let totalSteps = 4
+
+    private static var grantedText: String {
+        NSLocalizedString("onboarding.granted",
+                          value: "Granted",
+                          comment: "Onboarding permission status — permission is granted")
+    }
+    private static var notGrantedText: String {
+        NSLocalizedString("onboarding.notGranted",
+                          value: "Not Granted",
+                          comment: "Onboarding permission status — permission is not granted")
+    }
     private var currentStep = 0
     private var currentCard: NSWindow?
     private var stepObservers: [Any] = []
@@ -82,14 +93,20 @@ final class OnboardingController: NSObject {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
 
         // Title
-        let title = NSTextField(labelWithString: "Welcome to Glance")
+        let title = NSTextField(labelWithString:
+            NSLocalizedString("onboarding.welcome.title",
+                              value: "Welcome to Glance",
+                              comment: "Onboarding permission window title"))
         title.font = .systemFont(ofSize: 24, weight: .bold)
         title.alignment = .center
         title.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(title)
 
         // Subtitle
-        let subtitle = NSTextField(labelWithString: "Grant these permissions to get started.")
+        let subtitle = NSTextField(labelWithString:
+            NSLocalizedString("onboarding.welcome.subtitle",
+                              value: "Grant these permissions to get started.",
+                              comment: "Onboarding permission window subtitle"))
         subtitle.font = .systemFont(ofSize: 14)
         subtitle.textColor = .secondaryLabelColor
         subtitle.alignment = .center
@@ -99,8 +116,12 @@ final class OnboardingController: NSObject {
         // Accessibility row
         let hasA = AXIsProcessTrusted()
         let (aRow, aDot, aStatus) = makePermissionRow(
-            name: "Accessibility",
-            detail: "Required to move and resize windows",
+            name: NSLocalizedString("onboarding.permission.accessibility.name",
+                                    value: "Accessibility",
+                                    comment: "Onboarding permission row — macOS Accessibility permission name"),
+            detail: NSLocalizedString("onboarding.permission.accessibility.detail",
+                                      value: "Required to move and resize windows",
+                                      comment: "Onboarding permission row — reason we need Accessibility"),
             granted: hasA,
             action: #selector(openAccessibility)
         )
@@ -112,8 +133,12 @@ final class OnboardingController: NSObject {
         // Screen Recording row
         let hasSR = CGPreflightScreenCaptureAccess()
         let (sRow, sDot, sStatus) = makePermissionRow(
-            name: "Screen Recording",
-            detail: "Required to capture window thumbnails",
+            name: NSLocalizedString("onboarding.permission.screenRecording.name",
+                                    value: "Screen Recording",
+                                    comment: "Onboarding permission row — macOS Screen Recording permission name"),
+            detail: NSLocalizedString("onboarding.permission.screenRecording.detail",
+                                      value: "Required to capture window thumbnails",
+                                      comment: "Onboarding permission row — reason we need Screen Recording"),
             granted: hasSR,
             action: #selector(openScreenRecording)
         )
@@ -123,7 +148,11 @@ final class OnboardingController: NSObject {
         screenRecordingStatus = sStatus
 
         // Continue button
-        let btn = NSButton(title: "Continue", target: self, action: #selector(permissionsContinue))
+        let btn = NSButton(title:
+            NSLocalizedString("onboarding.continue",
+                              value: "Continue",
+                              comment: "Onboarding permission window — continue button"),
+                           target: self, action: #selector(permissionsContinue))
         btn.bezelStyle = .rounded
         btn.controlSize = .large
         btn.isEnabled = AXIsProcessTrusted() && CGPreflightScreenCaptureAccess()
@@ -186,14 +215,18 @@ final class OnboardingController: NSObject {
         detailLabel.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(detailLabel)
 
-        let status = NSTextField(labelWithString: granted ? "Granted" : "Not Granted")
+        let status = NSTextField(labelWithString: granted ? Self.grantedText : Self.notGrantedText)
         status.font = .systemFont(ofSize: 11, weight: .medium)
         status.textColor = granted ? .systemGreen : .systemOrange
         status.setContentHuggingPriority(.required, for: .horizontal)
         status.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(status)
 
-        let button = NSButton(title: "Open Settings", target: self, action: action)
+        let button = NSButton(title:
+            NSLocalizedString("onboarding.openSettings",
+                              value: "Open Settings",
+                              comment: "Onboarding permission row — button that jumps to System Settings"),
+                              target: self, action: action)
         button.bezelStyle = .rounded
         button.controlSize = .small
         button.translatesAutoresizingMaskIntoConstraints = false
@@ -226,11 +259,11 @@ final class OnboardingController: NSObject {
         let hasSR = CGPreflightScreenCaptureAccess()
 
         accessibilityDot?.layer?.backgroundColor = (hasA ? NSColor.systemGreen : NSColor.systemRed).cgColor
-        accessibilityStatus?.stringValue = hasA ? "Granted" : "Not Granted"
+        accessibilityStatus?.stringValue = hasA ? Self.grantedText : Self.notGrantedText
         accessibilityStatus?.textColor = hasA ? .systemGreen : .systemOrange
 
         screenRecordingDot?.layer?.backgroundColor = (hasSR ? NSColor.systemGreen : NSColor.systemRed).cgColor
-        screenRecordingStatus?.stringValue = hasSR ? "Granted" : "Not Granted"
+        screenRecordingStatus?.stringValue = hasSR ? Self.grantedText : Self.notGrantedText
         screenRecordingStatus?.textColor = hasSR ? .systemGreen : .systemOrange
 
         continueButton?.isEnabled = hasA && hasSR
@@ -299,14 +332,34 @@ final class OnboardingController: NSObject {
 
     private func stepContent(for step: Int) -> (String, String) {
         switch step {
-        case 0: return ("Move the Work Area",
-                        "Drag the work area to reposition it.\nTry moving it now!")
-        case 1: return ("Resize the Work Area",
-                        "Drag any edge of the work area\nto resize it. Try it now!")
-        case 2: return ("Switch Windows",
-                        "Click any thumbnail around the work area\nto bring that window to the front.")
-        case 3: return ("Quick Switch",
-                        "Tap the Option key (\u{2325}) to reveal\nkeyboard shortcuts for quick switching.")
+        case 0:
+            return (NSLocalizedString("onboarding.step.move.title",
+                                      value: "Move the Work Area",
+                                      comment: "Onboarding guide step 1 title"),
+                    NSLocalizedString("onboarding.step.move.message",
+                                      value: "Drag the work area to reposition it.\nTry moving it now!",
+                                      comment: "Onboarding guide step 1 body"))
+        case 1:
+            return (NSLocalizedString("onboarding.step.resize.title",
+                                      value: "Resize the Work Area",
+                                      comment: "Onboarding guide step 2 title"),
+                    NSLocalizedString("onboarding.step.resize.message",
+                                      value: "Drag any edge of the work area\nto resize it. Try it now!",
+                                      comment: "Onboarding guide step 2 body"))
+        case 2:
+            return (NSLocalizedString("onboarding.step.switch.title",
+                                      value: "Switch Windows",
+                                      comment: "Onboarding guide step 3 title"),
+                    NSLocalizedString("onboarding.step.switch.message",
+                                      value: "Click any thumbnail around the work area\nto bring that window to the front.",
+                                      comment: "Onboarding guide step 3 body"))
+        case 3:
+            return (NSLocalizedString("onboarding.step.quickSwitch.title",
+                                      value: "Quick Switch",
+                                      comment: "Onboarding guide step 4 title"),
+                    NSLocalizedString("onboarding.step.quickSwitch.message",
+                                      value: "Tap the Option key (\u{2325}) to reveal\nkeyboard shortcuts for quick switching.",
+                                      comment: "Onboarding guide step 4 body"))
         default: return ("", "")
         }
     }
@@ -470,7 +523,11 @@ final class OnboardingController: NSObject {
         card.contentView?.addSubview(container)
 
         // Step progress "Step 1 of 4"
-        let stepLabel = NSTextField(labelWithString: "Step \(step + 1) of \(Self.totalSteps)")
+        let stepProgressFormat = NSLocalizedString("onboarding.stepFormat",
+                                                   value: "Step %1$d of %2$d",
+                                                   comment: "Onboarding guide card progress label; %1$d is current step (1-based), %2$d is total")
+        let stepLabel = NSTextField(labelWithString:
+            String(format: stepProgressFormat, step + 1, Self.totalSteps))
         stepLabel.font = .systemFont(ofSize: 11, weight: .medium)
         stepLabel.textColor = NSColor.white.withAlphaComponent(0.5)
         stepLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -500,7 +557,11 @@ final class OnboardingController: NSObject {
         container.addSubview(msgLabel)
 
         // Skip button (subtle, text-only)
-        let skipBtn = NSButton(title: "Skip", target: self, action: #selector(skipStep))
+        let skipBtn = NSButton(title:
+            NSLocalizedString("onboarding.skip",
+                              value: "Skip",
+                              comment: "Onboarding guide card — skip current step"),
+                               target: self, action: #selector(skipStep))
         skipBtn.isBordered = false
         skipBtn.contentTintColor = NSColor.white.withAlphaComponent(0.4)
         skipBtn.font = .systemFont(ofSize: 12)

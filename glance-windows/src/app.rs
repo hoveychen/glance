@@ -81,6 +81,10 @@ pub struct GlanceApp {
     known_window_ids: HashSet<isize>,
     window_order: Vec<isize>,
     main_window_stack: Vec<isize>,
+    /// MRU list of recently-interacted thumbnail windows (newest at front).
+    /// Drives the recency glow. Capacity-based: a 4th interaction drops the
+    /// oldest; time does not evict.
+    mru_hwnds: std::collections::VecDeque<isize>,
     work_area_positions: HashMap<isize, Rect>,
     manual_screen_assignment: HashSet<isize>,
 
@@ -178,6 +182,7 @@ impl GlanceApp {
             known_window_ids: HashSet::new(),
             window_order: Vec::new(),
             main_window_stack: Vec::new(),
+            mru_hwnds: std::collections::VecDeque::new(),
             work_area_positions: HashMap::new(),
             manual_screen_assignment: HashSet::new(),
 
@@ -275,6 +280,22 @@ impl GlanceApp {
                 #[cfg(windows)]
                 unsafe {
                     windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0);
+                }
+            }
+            AppEvent::Tray(TrayAction::SetSwapResizeMode(mode)) => {
+                crate::config::update(|c| {
+                    c.swap_resize_mode = mode;
+                });
+                if self.is_active {
+                    self.refresh_layout();
+                }
+            }
+            AppEvent::Tray(TrayAction::SetMruGlowEnabled(enabled)) => {
+                crate::config::update(|c| {
+                    c.mru_glow_enabled = enabled;
+                });
+                if self.is_active {
+                    self.refresh_mru_highlights();
                 }
             }
             AppEvent::Input(InputEvent::ToggleHotkey) => {
@@ -528,6 +549,7 @@ impl GlanceApp {
         self.known_window_ids.clear();
         self.window_order.clear();
         self.main_window_stack.clear();
+        self.mru_hwnds.clear();
         self.work_area_positions.clear();
         self.manual_screen_assignment.clear();
         self.hint_mapping.clear();
@@ -574,6 +596,7 @@ impl GlanceApp {
         for hwnd in &disappeared {
             self.parked_windows.remove(hwnd);
             self.main_window_stack.retain(|h| h != hwnd);
+            self.mru_hwnds.retain(|h| h != hwnd);
             self.work_area_positions.remove(hwnd);
             if self.current_main_hwnd == Some(*hwnd) {
                 // Pop the stack to find the previous main window.
@@ -687,11 +710,22 @@ impl GlanceApp {
         // Move main window into the work area.
         if let (Some(main_h), Some(ref wa)) = (main_hwnd, &self.work_area) {
             let any_pinned = pinned_left_hwnd.is_some() || pinned_right_hwnd.is_some();
-            let target = if any_pinned {
+            let work_target = if any_pinned {
                 wa.main_panel_frame()
             } else {
                 wa.usable_frame()
             };
+            let main_native_size = real_windows
+                .iter()
+                .find(|w| w.hwnd == main_h)
+                .map(|w| (w.frame.width, w.frame.height))
+                .unwrap_or((work_target.width, work_target.height));
+            let target = crate::swap_resize::decide_main_window_target(
+                main_native_size,
+                work_target,
+                any_pinned,
+                crate::config::load().swap_resize_mode,
+            );
             self.window_manager.move_window(
                 main_h,
                 target.x.round() as i32,
@@ -764,6 +798,9 @@ impl GlanceApp {
             overlay.set_pinned_reference(pinned_right_hwnd.or(pinned_left_hwnd));
         }
 
+        // Re-apply recency glow — newly materialized overlays pick it up.
+        self.refresh_mru_highlights();
+
         // Register / update DWM thumbnails (source window → overlay window).
         self.register_thumbnails_for_slots(&slots);
     }
@@ -827,6 +864,7 @@ impl GlanceApp {
     fn handle_window_destroyed(&mut self, hwnd: isize) {
         self.parked_windows.remove(&hwnd);
         self.main_window_stack.retain(|h| *h != hwnd);
+        self.mru_hwnds.retain(|h| *h != hwnd);
         self.work_area_positions.remove(&hwnd);
 
         if self.current_main_hwnd == Some(hwnd) {
@@ -885,6 +923,34 @@ impl GlanceApp {
     }
 
     // -----------------------------------------------------------------------
+    // Recency glow (MRU)
+    // -----------------------------------------------------------------------
+
+    /// Capacity of the MRU glow list.
+    const MRU_CAPACITY: usize = 3;
+
+    /// Record a window as the most-recently-interacted thumbnail and refresh
+    /// overlay highlights. Dedups existing entries before insertion.
+    fn push_mru(&mut self, hwnd: isize) {
+        self.mru_hwnds.retain(|&h| h != hwnd);
+        self.mru_hwnds.push_front(hwnd);
+        while self.mru_hwnds.len() > Self::MRU_CAPACITY {
+            self.mru_hwnds.pop_back();
+        }
+        self.refresh_mru_highlights();
+    }
+
+    /// Apply the current MRU state (or clear, if disabled by config) to all
+    /// overlays. Safe to call when overlay_manager is absent.
+    fn refresh_mru_highlights(&mut self) {
+        let enabled = crate::config::load().mru_glow_enabled;
+        let list: Vec<isize> = self.mru_hwnds.iter().copied().collect();
+        if let Some(ref mut overlay) = self.overlay_manager {
+            overlay.apply_mru_ranks(&list, enabled);
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Thumbnail click (window swap)
     // -----------------------------------------------------------------------
 
@@ -894,6 +960,11 @@ impl GlanceApp {
         }
 
         self.exit_hint_mode();
+
+        // Recency glow: clicking counts as an interaction. Also covers the
+        // spring-load path (SpringLoadActivated calls into us) and focus
+        // auto-swap from Alt-Tab via handle_window_focused.
+        self.push_mru(hwnd);
 
         let old_main = self.current_main_hwnd;
 
@@ -943,6 +1014,10 @@ impl GlanceApp {
         if !self.is_active {
             return;
         }
+
+        // Recency glow: any drag completion counts, regardless of whether it
+        // resolves to a pin or a reorder.
+        self.push_mru(dragged_hwnd);
 
         // Get cursor position at drop time.
         #[cfg(windows)]
@@ -1083,6 +1158,9 @@ impl GlanceApp {
         if !self.is_active {
             return;
         }
+
+        // Recency glow: pinning is an interaction.
+        self.push_mru(hwnd);
 
         // If this window is already pinned on the other side, unpin it there first.
         match side {

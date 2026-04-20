@@ -6,11 +6,17 @@
 
 use std::sync::mpsc::Sender;
 
+use crate::swap_resize::SwapResizeMode;
+
 /// Actions that can be triggered from the system tray.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
     /// Toggle Glance on/off.
     Toggle,
+    /// Change the swap-into-work-area resize policy.
+    SetSwapResizeMode(SwapResizeMode),
+    /// Enable / disable the recency glow on thumbnails.
+    SetMruGlowEnabled(bool),
     /// Exit the application.
     Quit,
 }
@@ -21,7 +27,7 @@ pub enum TrayAction {
 
 #[cfg(windows)]
 mod platform {
-    use super::{Sender, TrayAction};
+    use super::{Sender, SwapResizeMode, TrayAction};
     use std::cell::RefCell;
     use std::mem;
 
@@ -33,9 +39,10 @@ mod platform {
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
         GetCursorPos, LoadImageW, PostMessageW, RegisterClassExW, SetForegroundWindow,
-        TrackPopupMenu, UnregisterClassW, IMAGE_ICON, LR_DEFAULTSIZE, MF_SEPARATOR, MF_STRING,
-        TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_COMMAND, WM_DESTROY,
-        WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_USER, WNDCLASSEXW, WS_OVERLAPPED,
+        TrackPopupMenu, UnregisterClassW, IMAGE_ICON, LR_DEFAULTSIZE, MF_CHECKED, MF_POPUP,
+        MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON,
+        WINDOW_EX_STYLE, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_USER,
+        WNDCLASSEXW, WS_OVERLAPPED,
     };
     use windows::Win32::UI::WindowsAndMessaging::HICON;
 
@@ -45,6 +52,9 @@ mod platform {
     /// Menu item IDs.
     const IDM_TOGGLE: usize = 1001;
     const IDM_QUIT: usize = 1002;
+    const IDM_RESIZE_PRESERVE: usize = 1010;
+    const IDM_RESIZE_CLAMP: usize = 1011;
+    const IDM_MRU_GLOW_TOGGLE: usize = 1020;
 
     /// Tray icon UID (arbitrary, unique within the process).
     const TRAY_UID: u32 = 1;
@@ -116,6 +126,16 @@ mod platform {
                 match id {
                     IDM_TOGGLE => send_action(TrayAction::Toggle),
                     IDM_QUIT => send_action(TrayAction::Quit),
+                    IDM_RESIZE_PRESERVE => send_action(
+                        TrayAction::SetSwapResizeMode(SwapResizeMode::PreserveAspectRatio)
+                    ),
+                    IDM_RESIZE_CLAMP => send_action(
+                        TrayAction::SetSwapResizeMode(SwapResizeMode::ClampMax)
+                    ),
+                    IDM_MRU_GLOW_TOGGLE => {
+                        let current = crate::config::load().mru_glow_enabled;
+                        send_action(TrayAction::SetMruGlowEnabled(!current));
+                    }
                     _ => {}
                 }
                 LRESULT(0)
@@ -141,12 +161,69 @@ mod platform {
         };
 
         // "Toggle Glance"
-        let toggle_label: Vec<u16> = "Toggle Glance\0".encode_utf16().collect();
+        let toggle_label: Vec<u16> = format!("{}\0", crate::strings::t("tray.toggle"))
+            .encode_utf16()
+            .collect();
         let _ = AppendMenuW(
             hmenu,
             MF_STRING,
             IDM_TOGGLE,
             windows::core::PCWSTR(toggle_label.as_ptr()),
+        );
+
+        // "Resize Mode" submenu
+        let resize_submenu = match CreatePopupMenu() {
+            Ok(m) => m,
+            Err(_) => {
+                let _ = DestroyMenu(hmenu);
+                return;
+            }
+        };
+        let current = crate::config::load().swap_resize_mode;
+        let preserve_flag = if current == SwapResizeMode::PreserveAspectRatio { MF_CHECKED } else { MF_UNCHECKED };
+        let clamp_flag    = if current == SwapResizeMode::ClampMax            { MF_CHECKED } else { MF_UNCHECKED };
+        let preserve_label: Vec<u16> = format!("{}\0", crate::strings::t("tray.resize.preserve"))
+            .encode_utf16()
+            .collect();
+        let clamp_label: Vec<u16> = format!("{}\0", crate::strings::t("tray.resize.clamp"))
+            .encode_utf16()
+            .collect();
+        let _ = AppendMenuW(
+            resize_submenu,
+            MF_STRING | preserve_flag,
+            IDM_RESIZE_PRESERVE,
+            windows::core::PCWSTR(preserve_label.as_ptr()),
+        );
+        let _ = AppendMenuW(
+            resize_submenu,
+            MF_STRING | clamp_flag,
+            IDM_RESIZE_CLAMP,
+            windows::core::PCWSTR(clamp_label.as_ptr()),
+        );
+        let resize_title: Vec<u16> = format!("{}\0", crate::strings::t("tray.resize_mode"))
+            .encode_utf16()
+            .collect();
+        let _ = AppendMenuW(
+            hmenu,
+            MF_POPUP,
+            resize_submenu.0 as usize,
+            windows::core::PCWSTR(resize_title.as_ptr()),
+        );
+
+        // "Highlight recent thumbnails" checkbox
+        let mru_flag = if crate::config::load().mru_glow_enabled {
+            MF_CHECKED
+        } else {
+            MF_UNCHECKED
+        };
+        let mru_label: Vec<u16> = format!("{}\0", crate::strings::t("tray.mru_glow"))
+            .encode_utf16()
+            .collect();
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING | mru_flag,
+            IDM_MRU_GLOW_TOGGLE,
+            windows::core::PCWSTR(mru_label.as_ptr()),
         );
 
         // Separator
@@ -158,7 +235,9 @@ mod platform {
         );
 
         // "Quit"
-        let quit_label: Vec<u16> = "Quit\0".encode_utf16().collect();
+        let quit_label: Vec<u16> = format!("{}\0", crate::strings::t("tray.quit"))
+            .encode_utf16()
+            .collect();
         let _ = AppendMenuW(
             hmenu,
             MF_STRING,

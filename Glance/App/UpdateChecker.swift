@@ -53,9 +53,15 @@ final class UpdateChecker {
         if let error {
             logger.error("Update check failed: \(error.localizedDescription)")
             if !silent {
+                let title = NSLocalizedString("update.checkFailed.title",
+                                              value: "Update Check Failed",
+                                              comment: "Alert title when update check cannot reach GitHub or parse the response")
+                let bodyFormat = NSLocalizedString("update.checkFailed.network",
+                                                   value: "Could not connect to GitHub.\n%@",
+                                                   comment: "Alert body for network failure; %@ is the underlying error description")
                 showAlert(
-                    title: "Update Check Failed",
-                    message: "Could not connect to GitHub.\n\(error.localizedDescription)",
+                    title: title,
+                    message: String(format: bodyFormat, error.localizedDescription),
                     showDownload: false
                 )
             }
@@ -67,7 +73,15 @@ final class UpdateChecker {
               let tagName = json["tag_name"] as? String else {
             logger.error("Update check: failed to parse response.")
             if !silent {
-                showAlert(title: "Update Check Failed", message: "Could not parse the release information from GitHub.", showDownload: false)
+                showAlert(
+                    title: NSLocalizedString("update.checkFailed.title",
+                                             value: "Update Check Failed",
+                                             comment: "Alert title when update check cannot reach GitHub or parse the response"),
+                    message: NSLocalizedString("update.checkFailed.parse",
+                                               value: "Could not parse the release information from GitHub.",
+                                               comment: "Alert body when the GitHub release JSON is malformed"),
+                    showDownload: false
+                )
             }
             return
         }
@@ -82,9 +96,14 @@ final class UpdateChecker {
             let body = (json["body"] as? String)
             showUpdateAvailable(latestVersion: latestVersion, releaseNotes: body, htmlURL: htmlURL)
         } else if !silent {
+            let bodyFormat = NSLocalizedString("update.upToDate.bodyFormat",
+                                               value: "Glance %@ is the latest version.",
+                                               comment: "Alert body when the installed build is already latest; %@ is version")
             showAlert(
-                title: "You're Up to Date",
-                message: "Glance \(currentVersion) is the latest version.",
+                title: NSLocalizedString("update.upToDate.title",
+                                         value: "You're Up to Date",
+                                         comment: "Alert title when the installed build is already latest"),
+                message: String(format: bodyFormat, currentVersion),
                 showDownload: false
             )
         }
@@ -108,14 +127,27 @@ final class UpdateChecker {
 
     private func showUpdateAvailable(latestVersion: String, releaseNotes: String?, htmlURL: String?) {
         let alert = NSAlert()
-        alert.messageText = "New Version Available"
-        alert.informativeText = "Glance \(latestVersion) is available. You are currently running \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")."
+        alert.messageText = NSLocalizedString("update.available.title",
+                                              value: "New Version Available",
+                                              comment: "Alert title when a newer release is available on GitHub")
+        let bodyFormat = NSLocalizedString("update.available.bodyFormat",
+                                           value: "Glance %1$@ is available. You are currently running %2$@.",
+                                           comment: "Alert body for new version; %1$@ latest, %2$@ current")
+        let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        alert.informativeText = String(format: bodyFormat, latestVersion, currentVersion)
         if let notes = releaseNotes, !notes.isEmpty {
-            alert.informativeText += "\n\nRelease notes:\n\(notes)"
+            let notesFormat = NSLocalizedString("update.available.releaseNotesFormat",
+                                                value: "\n\nRelease notes:\n%@",
+                                                comment: "Appended to the update-available alert; %@ is the raw release notes body")
+            alert.informativeText += String(format: notesFormat, notes)
         }
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "Download")
-        alert.addButton(withTitle: "Later")
+        alert.addButton(withTitle: NSLocalizedString("update.button.download",
+                                                     value: "Download",
+                                                     comment: "Update alert button — open release page"))
+        alert.addButton(withTitle: NSLocalizedString("update.button.later",
+                                                     value: "Later",
+                                                     comment: "Update alert button — dismiss"))
 
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
@@ -131,16 +163,21 @@ final class UpdateChecker {
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .informational
+        let okTitle = NSLocalizedString("common.ok",
+                                        value: "OK",
+                                        comment: "Generic OK button used in alerts")
         if showDownload {
-            alert.addButton(withTitle: "Download")
-            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: NSLocalizedString("update.button.download",
+                                                         value: "Download",
+                                                         comment: "Update alert button — open release page"))
+            alert.addButton(withTitle: okTitle)
             if alert.runModal() == .alertFirstButtonReturn {
                 if let url = URL(string: "https://github.com/\(repo)/releases/latest") {
                     NSWorkspace.shared.open(url)
                 }
             }
         } else {
-            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: okTitle)
             alert.runModal()
         }
     }

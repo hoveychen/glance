@@ -52,6 +52,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Stack of previously active window IDs (most recent last).
     private var mainWindowStack: [CGWindowID] = []
 
+    /// MRU list of recently-interacted thumbnail windows (newest first).
+    /// Drives the recency glow on thumbnails. Pure capacity-based eviction:
+    /// a 4th interaction drops the oldest — time doesn't evict.
+    private var mruThumbnailIDs: [CGWindowID] = []
+    private let mruCapacity = 3
+
     /// Windows manually dragged to a specific screen — exempt from capacity capping.
     private var manualScreenAssignment: Set<CGWindowID> = []
 
@@ -93,9 +99,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        applyDockIconPreference()
         setupMainMenu()
         setupStatusItem()
 
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(settingsDidChange),
+            name: Settings.didChangeNotification,
+            object: nil
+        )
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(screensDidChange),
@@ -190,6 +203,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Settings-driven policy
+
+    /// Applies the user's "Show Dock icon" preference by switching between
+    /// `.regular` (Dock + Cmd-Tab) and `.accessory` (menu-bar-only). Safe to
+    /// call repeatedly — setActivationPolicy is idempotent when the policy
+    /// is already at the requested value.
+    private func applyDockIconPreference() {
+        let policy: NSApplication.ActivationPolicy =
+            Settings.shared.showDockIcon ? .regular : .accessory
+        if NSApp.activationPolicy() != policy {
+            NSApp.setActivationPolicy(policy)
+        }
+    }
+
+    @objc private func settingsDidChange() {
+        applyDockIconPreference()
+        // MRU glow toggle flip should re-render without waiting for next refresh.
+        refreshMRUHighlights()
+    }
+
     // MARK: - Main Menu Bar
 
     /// Glance is a regular app (LSUIElement=false) so it shows in the Dock and
@@ -212,62 +245,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenuItem.submenu = appMenu
 
         appMenu.addItem(NSMenuItem(
-            title: "About Glance \(shortVersion) (\(buildNumber))",
+            title: String(format: GlanceMenuStrings.aboutFormat, shortVersion, buildNumber),
             action: #selector(showAbout),
             keyEquivalent: ""
         ))
         appMenu.addItem(NSMenuItem.separator())
 
         appMenu.addItem(NSMenuItem(
-            title: "Toggle Glance  \u{2303}\u{2325}H",
+            title: GlanceMenuStrings.toggleFull,
             action: #selector(toggleActive),
             keyEquivalent: ""
         ))
         appMenu.addItem(NSMenuItem(
-            title: "Show Guide",
+            title: GlanceMenuStrings.showGuide,
             action: #selector(showGuideAgain),
             keyEquivalent: ""
         ))
         appMenu.addItem(NSMenuItem(
-            title: "Check for Updates…",
+            title: GlanceMenuStrings.checkForUpdates,
             action: #selector(checkForUpdates),
             keyEquivalent: ""
         ))
         appMenu.addItem(NSMenuItem.separator())
 
         appMenu.addItem(NSMenuItem(
-            title: "Copy Diagnostics",
+            title: GlanceMenuStrings.settings,
+            action: #selector(showSettings),
+            keyEquivalent: ","
+        ))
+        appMenu.addItem(NSMenuItem.separator())
+
+        appMenu.addItem(NSMenuItem(
+            title: GlanceMenuStrings.copyDiagnostics,
             action: #selector(copyDiagnostics),
             keyEquivalent: ""
         ))
         appMenu.addItem(NSMenuItem(
-            title: "Dump System Sample…",
+            title: GlanceMenuStrings.dumpSystemSample,
             action: #selector(dumpSystemSample),
             keyEquivalent: ""
         ))
         appMenu.addItem(NSMenuItem.separator())
 
         appMenu.addItem(NSMenuItem(
-            title: "Hide Glance",
+            title: GlanceMenuStrings.hideGlance,
             action: #selector(NSApplication.hide(_:)),
             keyEquivalent: "h"
         ))
         let hideOthers = NSMenuItem(
-            title: "Hide Others",
+            title: GlanceMenuStrings.hideOthers,
             action: #selector(NSApplication.hideOtherApplications(_:)),
             keyEquivalent: "h"
         )
         hideOthers.keyEquivalentModifierMask = [.command, .option]
         appMenu.addItem(hideOthers)
         appMenu.addItem(NSMenuItem(
-            title: "Show All",
+            title: GlanceMenuStrings.showAll,
             action: #selector(NSApplication.unhideAllApplications(_:)),
             keyEquivalent: ""
         ))
         appMenu.addItem(NSMenuItem.separator())
 
         appMenu.addItem(NSMenuItem(
-            title: "Quit Glance",
+            title: GlanceMenuStrings.quitGlance,
             action: #selector(quitApp),
             keyEquivalent: "q"
         ))
@@ -288,24 +328,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let info = Bundle.main.infoDictionary ?? [:]
         let shortVersion = info["CFBundleShortVersionString"] as? String ?? "?"
         let buildNumber = info["CFBundleVersion"] as? String ?? "?"
-        let aboutTitle = "About Glance \(shortVersion) (\(buildNumber))"
+        let aboutTitle = String(format: GlanceMenuStrings.aboutFormat, shortVersion, buildNumber)
 
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: aboutTitle, action: #selector(showAbout), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Toggle (\u{2303}\u{2325}H)", action: #selector(toggleActive), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Show Guide", action: #selector(showGuideAgain), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: GlanceMenuStrings.toggleShort, action: #selector(toggleActive), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: GlanceMenuStrings.showGuide, action: #selector(showGuideAgain), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: GlanceMenuStrings.checkForUpdates, action: #selector(checkForUpdates), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Copy Diagnostics", action: #selector(copyDiagnostics), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Dump System Sample…", action: #selector(dumpSystemSample), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: GlanceMenuStrings.settings, action: #selector(showSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: GlanceMenuStrings.copyDiagnostics, action: #selector(copyDiagnostics), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: GlanceMenuStrings.dumpSystemSample, action: #selector(dumpSystemSample), keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: GlanceMenuStrings.quit, action: #selector(quitApp), keyEquivalent: "q"))
         statusItem.menu = menu
     }
 
     @objc private func checkForUpdates() {
         UpdateChecker.shared.checkNow()
+    }
+
+    @objc private func showSettings() {
+        SettingsWindowController.shared.showWindow()
     }
 
     @objc private func showAbout() {
@@ -729,28 +775,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Build metrics in stable order.
-        // Use the saved original frame (before parking) for aspect ratio and height,
-        // so layout inputs don't fluctuate from virtual-display frame jitter.
+        // Aspect ratio always comes from the current frame so the slot matches
+        // the captured screenshot (parked windows keep whatever size they had
+        // when last in the work area — including a clamp-distorted aspect).
+        // Original height is used only as the upscale cap, where the pre-park
+        // value gives a stable maximum.
         let orderedInfos = windowOrder.compactMap { id in thumbnailInfos.first { $0.windowID == id } }
         let metrics = orderedInfos.map { info -> WindowMetrics in
-            let frameForRatio: CGRect
-            if info.windowID == effectiveMainID {
-                // Active window is in the work area and may have been resized;
-                // use its current frame so the thumbnail slot matches the captured image.
-                frameForRatio = info.frame
-            } else if let orig = AccessibilityManager.shared.getOriginalFrame(for: info.windowID) {
-                frameForRatio = orig
-            } else {
-                frameForRatio = info.frame
-            }
-            let ratio: CGFloat = frameForRatio.height > 0
-                ? frameForRatio.width / frameForRatio.height
+            let ratio: CGFloat = info.frame.height > 0
+                ? info.frame.width / info.frame.height
                 : 16.0 / 9.0
+            let cappedHeight = AccessibilityManager.shared.getOriginalFrame(for: info.windowID)?.height
+                ?? info.frame.height
             return WindowMetrics(
                 windowID: info.windowID,
                 aspectRatio: ratio,
                 originalScreenIndex: info.originalScreenIndex,
-                originalHeight: frameForRatio.height,
+                originalHeight: cappedHeight,
                 isManuallyAssigned: manualScreenAssignment.contains(info.windowID)
             )
         }
@@ -869,6 +910,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.updateSlots(slotsByScreen[screenIdx] ?? [], allWindows: thumbnailInfos)
         }
 
+        // Re-apply recency glow — newly materialized thumbnails pick it up.
+        refreshMRUHighlights()
+
         // Capture thumbnails (including the active window so its thumbnail stays fresh)
         captureManager.updateCaptures(for: thumbnailInfos) { [weak self] windowID, image in
             guard let self else { return }
@@ -878,6 +922,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for (_, controller) in self.overlayControllers {
                 controller.thumbnailUpdated(windowID: windowID)
             }
+        }
+    }
+
+    // MARK: - Recency glow (MRU)
+
+    /// Record a window as the most recently interacted thumbnail. Older
+    /// entries beyond capacity are dropped. Triggers a glow refresh.
+    private func pushToMRU(_ windowID: CGWindowID) {
+        mruThumbnailIDs.removeAll { $0 == windowID }
+        mruThumbnailIDs.insert(windowID, at: 0)
+        if mruThumbnailIDs.count > mruCapacity {
+            mruThumbnailIDs.removeLast(mruThumbnailIDs.count - mruCapacity)
+        }
+        refreshMRUHighlights()
+    }
+
+    /// Apply the current MRU state (or clear it, if the setting is off) to
+    /// every overlay controller's thumbnails.
+    private func refreshMRUHighlights() {
+        let enabled = Settings.shared.mruGlowEnabled
+        for (_, controller) in overlayControllers {
+            controller.updateMRUGlow(mruList: mruThumbnailIDs, enabled: enabled)
         }
     }
 
@@ -896,6 +962,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.post(name: .glanceThumbnailClicked, object: nil)
 
         logger.warning("Swapping to window: \(clickedInfo.displayName)")
+
+        // Recency glow: record this interaction. The clicked window becomes
+        // the main window (no thumbnail right now), but its MRU entry
+        // persists — its glow reappears when it cycles back to thumbnail.
+        pushToMRU(clickedInfo.windowID)
 
         let oldMainID = currentMainWindowID
         // Push old main onto the stack for back-navigation
@@ -1034,6 +1105,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         logger.warning("Pinned \(windowInfo.displayName) as \(side == .left ? "left" : "right") reference")
 
+        // Recency glow: a successful pin counts as an interaction.
+        pushToMRU(windowInfo.windowID)
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.windowTracker.forceUpdate()
         }
@@ -1151,19 +1225,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dw.orderFrontRegardless()
         previewDimWindow = dw
 
-        // Calculate preview size: up to original size, clamped to work area
-        let origFrame = AccessibilityManager.shared.getOriginalFrame(for: windowID)
-        var imgW = origFrame?.width ?? CGFloat(image.width)
-        var imgH = origFrame?.height ?? CGFloat(image.height)
-
-        if imgW > usable.width {
-            let scale = usable.width / imgW
-            imgW *= scale; imgH *= scale
-        }
-        if imgH > usable.height {
-            let scale = usable.height / imgH
-            imgW *= scale; imgH *= scale
-        }
+        // Preview size mirrors the window's current rendered frame so its aspect
+        // matches the captured screenshot (a Clamp-Max-distorted window would
+        // otherwise pillarbox inside the preview). Capped to the work area.
+        let target = computeSwapTargetFrame(
+            windowSize: info.frame.size,
+            workArea: usable,
+            mode: .preserveAspectRatio
+        )
+        let imgW = target.width
+        let imgH = target.height
 
         // Center in work area (convert CG → AppKit coords)
         let previewX = usable.origin.x + (usable.width - imgW) / 2
@@ -1227,22 +1298,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             cachedThumbnailInfos.first { $0.windowID == id }
         }
         let metrics = orderedInfos.map { info -> WindowMetrics in
-            let frameForRatio: CGRect
-            if info.windowID == currentMainWindowID {
-                frameForRatio = info.frame
-            } else if let orig = AccessibilityManager.shared.getOriginalFrame(for: info.windowID) {
-                frameForRatio = orig
-            } else {
-                frameForRatio = info.frame
-            }
-            let ratio: CGFloat = frameForRatio.height > 0
-                ? frameForRatio.width / frameForRatio.height
+            let ratio: CGFloat = info.frame.height > 0
+                ? info.frame.width / info.frame.height
                 : 16.0 / 9.0
+            let cappedHeight = AccessibilityManager.shared.getOriginalFrame(for: info.windowID)?.height
+                ?? info.frame.height
             return WindowMetrics(
                 windowID: info.windowID,
                 aspectRatio: ratio,
                 originalScreenIndex: info.originalScreenIndex,
-                originalHeight: frameForRatio.height,
+                originalHeight: cappedHeight,
                 isManuallyAssigned: manualScreenAssignment.contains(info.windowID)
             )
         }
@@ -1257,6 +1322,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for (screenIdx, controller) in overlayControllers {
             controller.updateSlots(slotsByScreen[screenIdx] ?? [], allWindows: cachedThumbnailInfos)
         }
+
+        // Keep recency glow consistent on the drag-relayout fast path too.
+        refreshMRUHighlights()
     }
 
     private func handleDragMoved(windowID: CGWindowID, point: CGPoint) {
@@ -1338,6 +1406,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleDragComplete(windowID: CGWindowID) {
         let mouseLocation = NSEvent.mouseLocation  // AppKit coords
         workAreaWindow?.updateDropHint(side: nil)
+
+        // Recency glow: a drag counts as an interaction regardless of whether
+        // it results in a pin (covered again by pinAsReference) or a reorder.
+        pushToMRU(windowID)
 
         // If dropped on the work area, pin as reference (skip if already pinned or is main).
         // Side is chosen by which half of the work area the drop landed on.
@@ -1739,10 +1811,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pasteboard.setString(snapshot, forType: .string)
 
         let alert = NSAlert()
-        alert.messageText = "Diagnostics copied to clipboard"
-        alert.informativeText = "Paste into the bug report. (\(snapshot.count) characters)"
+        alert.messageText = NSLocalizedString("diagnostics.copied.title",
+                                              value: "Diagnostics copied to clipboard",
+                                              comment: "Alert title after Copy Diagnostics writes to the clipboard")
+        let bodyFormat = NSLocalizedString("diagnostics.copied.bodyFormat",
+                                           value: "Paste into the bug report. (%d characters)",
+                                           comment: "Alert body after Copy Diagnostics; %d is the character count")
+        alert.informativeText = String(format: bodyFormat, snapshot.count)
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: NSLocalizedString("common.ok",
+                                                     value: "OK",
+                                                     comment: "Generic OK button used in alerts"))
         alert.runModal()
     }
 
@@ -1758,10 +1837,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             logger.error("dumpSystemSample: mkdir failed: \(error.localizedDescription, privacy: .public)")
             let a = NSAlert()
-            a.messageText = "Could not create diagnostic folder"
+            a.messageText = NSLocalizedString("diagnostics.folderCreateFailed.title",
+                                              value: "Could not create diagnostic folder",
+                                              comment: "Alert title when Dump System Sample fails to mkdir its output folder")
             a.informativeText = error.localizedDescription
             a.alertStyle = .warning
-            a.addButton(withTitle: "OK")
+            a.addButton(withTitle: NSLocalizedString("common.ok",
+                                                     value: "OK",
+                                                     comment: "Generic OK button used in alerts"))
             a.runModal()
             return
         }
@@ -1803,10 +1886,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 NSWorkspace.shared.activateFileViewerSelecting([dirURL])
                 let alert = NSAlert()
-                alert.messageText = "System sample captured"
-                alert.informativeText = "Saved to:\n\(dirURL.path)\n\nContents:\n• glance.txt — sample of Glance\n• replayd.txt — sample of ScreenCaptureKit daemon\n• system-log.txt — last 2 min of WindowServer / ScreenCaptureKit log\n• diagnostic-snapshot.txt — Glance internal state\n\nAttach all four files to the bug report."
+                alert.messageText = NSLocalizedString("diagnostics.sample.title",
+                                                      value: "System sample captured",
+                                                      comment: "Alert title after Dump System Sample finishes")
+                let bodyFormat = NSLocalizedString("diagnostics.sample.bodyFormat",
+                                                   value: "Saved to:\n%@\n\nContents:\n• glance.txt — sample of Glance\n• replayd.txt — sample of ScreenCaptureKit daemon\n• system-log.txt — last 2 min of WindowServer / ScreenCaptureKit log\n• diagnostic-snapshot.txt — Glance internal state\n\nAttach all four files to the bug report.",
+                                                   comment: "Alert body after Dump System Sample; %@ is the output folder path")
+                alert.informativeText = String(format: bodyFormat, dirURL.path)
                 alert.alertStyle = .informational
-                alert.addButton(withTitle: "OK")
+                alert.addButton(withTitle: NSLocalizedString("common.ok",
+                                                             value: "OK",
+                                                             comment: "Generic OK button used in alerts"))
                 alert.runModal()
             }
         }

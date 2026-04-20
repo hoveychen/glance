@@ -1,0 +1,112 @@
+/* Settings window */
+"settings.window.title"            = "Settings";
+"settings.window.titleWithPanel"   = "Settings — %@";
+"settings.panel.general"           = "General";
+"settings.panel.window"            = "Window";
+
+/* General panel */
+"settings.general.startup.header"         = "Startup";
+"settings.general.launchAtLogin"          = "Launch Glance at login";
+"settings.general.launchAtLogin.hint"     = "Start Glance automatically when you sign in. You can also manage this in System Settings → General → Login Items.";
+"settings.general.appearance.header"      = "Appearance";
+"settings.general.showDockIcon"           = "Show Glance icon in the Dock";
+"settings.general.showDockIcon.hint"      = "When off, Glance runs as a menu bar app. You can still reach it from the status bar icon.";
+"settings.general.language.header"        = "Language";
+"settings.general.language.label"         = "Display language:";
+"settings.general.language.hint"          = "Changes take effect after Glance restarts.";
+"settings.general.language.restart.title" = "Restart Glance to apply the new language?";
+"settings.general.language.restart.body"  = "The interface language updates the next time Glance launches.";
+"settings.general.language.restart.now"   = "Restart Now";
+"settings.general.language.restart.later" = "Later";
+
+/* Language override options */
+"language.system"            = "Follow System";
+"language.english"           = "English";
+"language.simplifiedChinese" = "简体中文";
+
+/* Window panel */
+"settings.window.swapResize.header"        = "Swap Resize Behavior";
+"settings.window.swapResize.explain"       = "When a window is swapped into the Glance work area and is larger than the work area, choose how Glance fits it in.";
+"settings.window.swapResize.preserve.hint" = "Scale the window down uniformly so it fits, keeping its original proportions. Recommended for most apps.";
+"settings.window.swapResize.clamp.hint"    = "Clip the window's width and height independently to the work area. Useful when an app behaves better at full work-area size than at a scaled-down version.";
+
+/* Swap resize radio titles */
+"swapResize.preserveAspectRatio" = "Preserve Aspect Ratio";
+"swapResize.clampMax"            = "Clamp Max Width / Height";
+
+/* MRU glow (recent thumbnail highlight) */
+"settings.window.mruGlow.header" = "Recent Thumbnail Highlight";
+"settings.window.mruGlow.toggle" = "Highlight recently used thumbnails";
+"settings.window.mruGlow.hint"   = "Adds a yellow halo around the 3 most recently clicked, dragged, or pinned thumbnails. The newest glows brightest; older ones dim. Helps locate what you were just working on when many windows are open.";
+
+/* Main menu + status bar menu */
+"menu.aboutGlanceFormat"  = "About Glance %1$@ (%2$@)";
+"menu.toggleGlance.full"  = "Toggle Glance  \U2303\U2325H";
+"menu.toggleGlance.short" = "Toggle (\U2303\U2325H)";
+"menu.showGuide"          = "Show Guide";
+"menu.checkForUpdates"    = "Check for Updates…";
+"menu.settings"           = "Settings…";
+"menu.copyDiagnostics"    = "Copy Diagnostics";
+"menu.dumpSystemSample"   = "Dump System Sample…";
+"menu.hideGlance"         = "Hide Glance";
+"menu.hideOthers"         = "Hide Others";
+"menu.showAll"            = "Show All";
+"menu.quitGlance"         = "Quit Glance";
+"menu.quit"               = "Quit";
+
+/* Work area surface (work-area floating window) */
+"workArea.label"       = "Work Area";
+"workArea.exit"        = "✕ Exit";
+"workArea.unpinLeft"   = "✕ Unpin Left";
+"workArea.unpinRight"  = "✕ Unpin Right";
+"workArea.quickSwitch" = "⇥ Switch (\U2325)";
+
+/* Thumbnail pin accessibility labels */
+"thumbnail.pinLeft.accessibility"  = "Pin as Left Reference";
+"thumbnail.pinRight.accessibility" = "Pin as Right Reference";
+
+/* Onboarding — permission phase */
+"onboarding.welcome.title"                        = "Welcome to Glance";
+"onboarding.welcome.subtitle"                     = "Grant these permissions to get started.";
+"onboarding.permission.accessibility.name"        = "Accessibility";
+"onboarding.permission.accessibility.detail"      = "Required to move and resize windows";
+"onboarding.permission.screenRecording.name"      = "Screen Recording";
+"onboarding.permission.screenRecording.detail"    = "Required to capture window thumbnails";
+"onboarding.granted"                              = "Granted";
+"onboarding.notGranted"                           = "Not Granted";
+"onboarding.openSettings"                         = "Open Settings";
+"onboarding.continue"                             = "Continue";
+
+/* Onboarding — guide cards */
+"onboarding.skip"                          = "Skip";
+"onboarding.stepFormat"                    = "Step %1$d of %2$d";
+"onboarding.step.move.title"               = "Move the Work Area";
+"onboarding.step.move.message"             = "Drag the work area to reposition it.\nTry moving it now!";
+"onboarding.step.resize.title"             = "Resize the Work Area";
+"onboarding.step.resize.message"           = "Drag any edge of the work area\nto resize it. Try it now!";
+"onboarding.step.switch.title"             = "Switch Windows";
+"onboarding.step.switch.message"           = "Click any thumbnail around the work area\nto bring that window to the front.";
+"onboarding.step.quickSwitch.title"        = "Quick Switch";
+"onboarding.step.quickSwitch.message"      = "Tap the Option key (\U2325) to reveal\nkeyboard shortcuts for quick switching.";
+
+/* Update checker */
+"update.checkFailed.title"            = "Update Check Failed";
+"update.checkFailed.network"          = "Could not connect to GitHub.\n%@";
+"update.checkFailed.parse"            = "Could not parse the release information from GitHub.";
+"update.upToDate.title"               = "You're Up to Date";
+"update.upToDate.bodyFormat"          = "Glance %@ is the latest version.";
+"update.available.title"              = "New Version Available";
+"update.available.bodyFormat"         = "Glance %1$@ is available. You are currently running %2$@.";
+"update.available.releaseNotesFormat" = "\n\nRelease notes:\n%@";
+"update.button.download"              = "Download";
+"update.button.later"                 = "Later";
+
+/* Diagnostics alerts */
+"diagnostics.copied.title"              = "Diagnostics copied to clipboard";
+"diagnostics.copied.bodyFormat"         = "Paste into the bug report. (%d characters)";
+"diagnostics.folderCreateFailed.title"  = "Could not create diagnostic folder";
+"diagnostics.sample.title"              = "System sample captured";
+"diagnostics.sample.bodyFormat"         = "Saved to:\n%@\n\nContents:\n• glance.txt — sample of Glance\n• replayd.txt — sample of ScreenCaptureKit daemon\n• system-log.txt — last 2 min of WindowServer / ScreenCaptureKit log\n• diagnostic-snapshot.txt — Glance internal state\n\nAttach all four files to the bug report.";
+
+/* Shared buttons */
+"common.ok" = "OK";
