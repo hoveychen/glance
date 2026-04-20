@@ -961,10 +961,17 @@ impl GlanceApp {
 
         self.exit_hint_mode();
 
-        // Recency glow: clicking counts as an interaction. Also covers the
-        // spring-load path (SpringLoadActivated calls into us) and focus
-        // auto-swap from Alt-Tab via handle_window_focused.
-        self.push_mru(hwnd);
+        // Recency glow: the target window is about to become active, so
+        // strip it from MRU — active windows aren't "recently-used
+        // thumbnails". The outgoing main is the one that just turned
+        // into a thumbnail, so push it instead. Covers click / spring-load /
+        // focus auto-swap (Alt-Tab via handle_window_focused) uniformly.
+        self.mru_hwnds.retain(|&h| h != hwnd);
+        if let Some(old) = self.current_main_hwnd {
+            self.push_mru(old);
+        } else {
+            self.refresh_mru_highlights();
+        }
 
         let old_main = self.current_main_hwnd;
 

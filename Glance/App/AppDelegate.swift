@@ -963,10 +963,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         logger.warning("Swapping to window: \(clickedInfo.displayName)")
 
-        // Recency glow: record this interaction. The clicked window becomes
-        // the main window (no thumbnail right now), but its MRU entry
-        // persists — its glow reappears when it cycles back to thumbnail.
-        pushToMRU(clickedInfo.windowID)
+        // Recency glow: the clicked window is becoming active, so it must
+        // not occupy an MRU slot — the glow highlights recently-used
+        // thumbnails, not the window the user is now working in. The
+        // outgoing main, however, just turned into a thumbnail and is the
+        // freshest "recently used" candidate.
+        mruThumbnailIDs.removeAll { $0 == clickedInfo.windowID }
+        if let oldID = currentMainWindowID {
+            pushToMRU(oldID)
+        } else {
+            refreshMRUHighlights()
+        }
 
         let oldMainID = currentMainWindowID
         // Push old main onto the stack for back-navigation
