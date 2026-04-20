@@ -75,13 +75,17 @@ final class ThumbnailView: NSView {
             NSPasteboard.PasteboardType("NSFilenamesPboardType"),
         ])
 
-        // MRU recency halo — sits BEHIND imageLayer so it peeks out as a ring.
+        // MRU recency halo — sits BEHIND imageLayer, sized/shaped to match it
+        // exactly so the yellow fill is fully covered; the glow shows purely
+        // as an outward shadow. Matching the image silhouette keeps the
+        // NSWindow native drop-shadow from wrapping around an oversized
+        // yellow rect (which previously produced a visible dark ring).
         // Alpha modulated by rank via updateMRUGlow(rank:).
         mruGlowLayer.backgroundColor = NSColor.systemYellow.cgColor
-        mruGlowLayer.cornerRadius = 14
+        mruGlowLayer.cornerRadius = 8
         mruGlowLayer.shadowColor = NSColor.systemYellow.cgColor
-        mruGlowLayer.shadowOpacity = 0.9
-        mruGlowLayer.shadowRadius = 10
+        mruGlowLayer.shadowOpacity = 1.0
+        mruGlowLayer.shadowRadius = 14
         mruGlowLayer.shadowOffset = .zero
         mruGlowLayer.isHidden = true
         mruGlowLayer.opacity = 0
@@ -229,9 +233,7 @@ final class ThumbnailView: NSView {
         let imageRect = CGRect(x: 0, y: 0, width: bounds.width, height: bounds.height - hH)
         imageLayer.frame = imageRect
 
-        // Halo extends ~4pt beyond the image rect on all sides.
-        let glowInset: CGFloat = 4
-        mruGlowLayer.frame = imageRect.insetBy(dx: -glowInset, dy: -glowInset)
+        mruGlowLayer.frame = imageRect
 
         // Icon + label above the image, left-aligned
         let iconSize: CGFloat = 28
