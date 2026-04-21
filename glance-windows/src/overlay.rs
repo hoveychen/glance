@@ -39,6 +39,9 @@ pub enum OverlayEvent {
     SpringLoadActivated(isize),
     /// The user clicked a pin button on a thumbnail: (hwnd, side).
     PinClicked(isize, PinSide),
+    /// The user clicked directly on the hint pill — request to enter rename
+    /// mode for this window's reservation key.
+    HintPillClicked(isize),
 }
 
 // ===========================================================================
@@ -121,6 +124,22 @@ mod platform {
         x >= rc.left && x < rc.right && y >= rc.top && y < rc.bottom
     }
 
+    /// Rect for the hint badge pill, centered in the client area. Kept in
+    /// sync with `paint_hint_badge` so click-testing matches what the user
+    /// sees.
+    fn hint_badge_rect(client: &RECT, style: HintStyle) -> RECT {
+        let badge_w: i32 = if style == HintStyle::Editing { 56 } else { 40 };
+        let badge_h: i32 = 40;
+        let cx = (client.left + client.right) / 2;
+        let cy = (client.top + client.bottom) / 2;
+        RECT {
+            left: cx - badge_w / 2,
+            top: cy - badge_h / 2,
+            right: cx + badge_w / 2,
+            bottom: cy + badge_h / 2,
+        }
+    }
+
     /// Wide class name for overlay windows, null-terminated.
     const CLASS_NAME: &[u16] = &[
         b'G' as u16, b'l' as u16, b'a' as u16, b'n' as u16, b'c' as u16, b'e' as u16,
@@ -157,6 +176,15 @@ mod platform {
         Hovered,
     }
 
+    /// Visual style for the hint pill. `Auto` = system-assigned (hollow),
+    /// `Reserved` = user-named (filled), `Editing` = awaiting new key input.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum HintStyle {
+        Auto,
+        Reserved,
+        Editing,
+    }
+
     /// Per-overlay-window state, heap-allocated and stored in GWLP_USERDATA.
     struct OverlayWindowState {
         source_hwnd: isize,
@@ -175,6 +203,7 @@ mod platform {
         // Visual state
         visual_state: OverlayVisualState,
         hint_char: Option<String>,
+        hint_style: HintStyle,
         /// MRU recency rank: 0 = newest, 1 = middle, 2 = oldest. None = no glow.
         mru_rank: Option<u8>,
     }
@@ -436,9 +465,29 @@ mod platform {
                         .sender
                         .send(OverlayEvent::ThumbnailDragCompleted(state.source_hwnd));
                 } else {
-                    let _ = state
-                        .sender
-                        .send(OverlayEvent::ThumbnailClicked(state.source_hwnd));
+                    // Distinguish clicks on the hint pill (rename intent) from
+                    // clicks anywhere else on the thumbnail (switch intent).
+                    let lx = (lparam.0 & 0xFFFF) as i16 as i32;
+                    let ly = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
+                    let mut hit_pill = false;
+                    if state.hint_char.is_some() {
+                        let mut client_rect = RECT::default();
+                        let _ = GetClientRect(hwnd, &mut client_rect);
+                        let badge = hint_badge_rect(&client_rect, state.hint_style);
+                        if point_in_rect(lx, ly, &badge) {
+                            hit_pill = true;
+                        }
+                    }
+
+                    if hit_pill {
+                        let _ = state
+                            .sender
+                            .send(OverlayEvent::HintPillClicked(state.source_hwnd));
+                    } else {
+                        let _ = state
+                            .sender
+                            .send(OverlayEvent::ThumbnailClicked(state.source_hwnd));
+                    }
                 }
 
                 LRESULT(0)
@@ -597,7 +646,7 @@ mod platform {
 
         // --- Hint badge ---
         if let Some(ref hint) = state.hint_char {
-            paint_hint_badge(hdc, &client_rect, hint);
+            paint_hint_badge(hdc, &client_rect, hint, state.hint_style);
         }
 
         let _ = EndPaint(hwnd, &ps);
@@ -836,26 +885,34 @@ mod platform {
         hdc: windows::Win32::Graphics::Gdi::HDC,
         rect: &RECT,
         hint: &str,
+        style: HintStyle,
     ) {
-        let badge_w = 40;
-        let badge_h = 40;
-        let cx = (rect.left + rect.right) / 2;
-        let cy = (rect.top + rect.bottom) / 2;
+        let badge_rect = hint_badge_rect(rect, style);
 
-        let badge_rect = RECT {
-            left: cx - badge_w / 2,
-            top: cy - badge_h / 2,
-            right: cx + badge_w / 2,
-            bottom: cy + badge_h / 2,
-        };
+        match style {
+            HintStyle::Auto => {
+                // Hollow pill: dark semi-transparent fill + yellow outline.
+                let bg = CreateSolidBrush(windows::Win32::Foundation::COLORREF(rgb(30, 30, 30)));
+                FillRect(hdc, &badge_rect, bg);
+                let _ = DeleteObject(bg);
+                paint_border(hdc, &badge_rect, COLOR_HINT_BG, 2);
+            }
+            HintStyle::Reserved => {
+                // Solid yellow pill — user-named, visually stable.
+                let bg = CreateSolidBrush(windows::Win32::Foundation::COLORREF(COLOR_HINT_BG));
+                FillRect(hdc, &badge_rect, bg);
+                let _ = DeleteObject(bg);
+            }
+            HintStyle::Editing => {
+                // Blue pill + white outline — clearly awaiting input.
+                let bg = CreateSolidBrush(windows::Win32::Foundation::COLORREF(COLOR_BORDER_PINNED));
+                FillRect(hdc, &badge_rect, bg);
+                let _ = DeleteObject(bg);
+                paint_border(hdc, &badge_rect, COLOR_TEXT_WHITE, 2);
+            }
+        }
 
-        // Yellow background
-        let bg_brush =
-            CreateSolidBrush(windows::Win32::Foundation::COLORREF(COLOR_HINT_BG));
-        FillRect(hdc, &badge_rect, bg_brush);
-        let _ = DeleteObject(bg_brush);
-
-        // White bold text
+        // White bold text — rendered left-of-center when editing, centered otherwise.
         let font = CreateFontW(
             24,
             0, 0, 0,
@@ -868,7 +925,18 @@ mod platform {
         SetBkMode(hdc, TRANSPARENT);
 
         let hint_wide = encode_wide_no_null(hint);
-        let mut text_rect = badge_rect;
+        let mut text_rect = if style == HintStyle::Editing {
+            // Shrink the text rect so the char sits on the left, leaving ~16px
+            // on the right for the caret.
+            RECT {
+                left: badge_rect.left,
+                top: badge_rect.top,
+                right: badge_rect.right - 16,
+                bottom: badge_rect.bottom,
+            }
+        } else {
+            badge_rect
+        };
         DrawTextW(
             hdc,
             &mut hint_wide.clone(),
@@ -878,6 +946,25 @@ mod platform {
 
         SelectObject(hdc, old_font);
         let _ = DeleteObject(font);
+
+        // Caret bar — the paint pass is synchronous so we can't blink here; we
+        // draw it solid and rely on the caller repainting via a timer if the
+        // blink animation is desired. For this pass the caret is always visible.
+        if style == HintStyle::Editing {
+            let caret_w = 3;
+            let caret_h = 22;
+            let caret_cy = (badge_rect.top + badge_rect.bottom) / 2;
+            let caret_rect = RECT {
+                left: badge_rect.right - caret_w - 6,
+                top: caret_cy - caret_h / 2,
+                right: badge_rect.right - 6,
+                bottom: caret_cy + caret_h / 2,
+            };
+            let caret_brush =
+                CreateSolidBrush(windows::Win32::Foundation::COLORREF(COLOR_TEXT_WHITE));
+            FillRect(hdc, &caret_rect, caret_brush);
+            let _ = DeleteObject(caret_brush);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -979,6 +1066,7 @@ mod platform {
                     is_mouse_inside: false,
                     visual_state: OverlayVisualState::Normal,
                     hint_char: None,
+                    hint_style: HintStyle::Auto,
                     mru_rank: None,
                 });
                 let state_ptr = Box::into_raw(state);
@@ -1084,16 +1172,17 @@ mod platform {
             }
         }
 
-        /// Set or clear the hint badge character.
-        pub fn set_hint(&mut self, hint: Option<String>) {
+        /// Set or clear the hint badge character and its visual style.
+        pub fn set_hint(&mut self, hint: Option<String>, style: HintStyle) {
             if self.state_ptr.is_null() {
                 return;
             }
             unsafe {
-                if (*self.state_ptr).hint_char == hint {
+                if (*self.state_ptr).hint_char == hint && (*self.state_ptr).hint_style == style {
                     return;
                 }
                 (*self.state_ptr).hint_char = hint;
+                (*self.state_ptr).hint_style = style;
                 self.invalidate();
             }
         }
@@ -1324,7 +1413,14 @@ mod platform {
         }
 
         /// Show hint badges on overlays, returning a mapping of hint key -> source hwnd.
-        pub fn show_hints(&mut self, hint_keys: &[String]) -> HashMap<String, isize> {
+        /// Reserved keys in `preassigned` (keyed by source hwnd) take priority over the
+        /// sequential `hint_keys` fill, so the user can blind-press the same letter to
+        /// reach the same window regardless of grid shuffling.
+        pub fn show_hints(
+            &mut self,
+            hint_keys: &[String],
+            preassigned: &HashMap<isize, String>,
+        ) -> HashMap<String, isize> {
             let mut mapping: HashMap<String, isize> = HashMap::new();
             let mut overlays_sorted: Vec<&mut ThumbnailOverlayWindow> =
                 self.overlays.values_mut().collect();
@@ -1337,14 +1433,51 @@ mod platform {
                     .then_with(|| a.hwnd.cmp(&b.hwnd))
             });
 
-            for (i, overlay) in overlays_sorted.iter_mut().enumerate() {
-                if let Some(key) = hint_keys.get(i) {
-                    overlay.set_hint(Some(key.clone()));
+            let mut hint_idx = 0usize;
+            for overlay in overlays_sorted.iter_mut() {
+                if let Some(key) = preassigned.get(&overlay.source_hwnd) {
+                    overlay.set_hint(Some(key.clone()), HintStyle::Reserved);
                     mapping.insert(key.clone(), overlay.source_hwnd);
+                    continue;
+                }
+                if let Some(key) = hint_keys.get(hint_idx) {
+                    overlay.set_hint(Some(key.clone()), HintStyle::Auto);
+                    mapping.insert(key.clone(), overlay.source_hwnd);
+                    hint_idx += 1;
                 }
             }
 
             mapping
+        }
+
+        /// Switch a single overlay's pill into editing mode. The displayed
+        /// character is preserved so the user sees what key they're replacing.
+        pub fn set_hint_editing(&mut self, source_hwnd: isize, character: String) {
+            if let Some(overlay) = self
+                .overlays
+                .values_mut()
+                .find(|o| o.source_hwnd == source_hwnd)
+            {
+                overlay.set_hint(Some(character), HintStyle::Editing);
+            }
+        }
+
+        /// Restore a single overlay's pill to a non-editing style after edit
+        /// mode exits.
+        pub fn set_hint_style(
+            &mut self,
+            source_hwnd: isize,
+            character: String,
+            reserved: bool,
+        ) {
+            let style = if reserved { HintStyle::Reserved } else { HintStyle::Auto };
+            if let Some(overlay) = self
+                .overlays
+                .values_mut()
+                .find(|o| o.source_hwnd == source_hwnd)
+            {
+                overlay.set_hint(Some(character), style);
+            }
         }
 
         /// Apply MRU recency ranks to overlays. `mru_list` is ordered newest
@@ -1367,7 +1500,7 @@ mod platform {
         /// Hide all hint badges.
         pub fn hide_hints(&mut self) {
             for overlay in self.overlays.values_mut() {
-                overlay.set_hint(None);
+                overlay.set_hint(None, HintStyle::Auto);
             }
         }
 
@@ -1505,6 +1638,14 @@ mod platform {
         Hovered,
     }
 
+    /// Stub hint-pill style for non-Windows.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum HintStyle {
+        Auto,
+        Reserved,
+        Editing,
+    }
+
     /// Stub thumbnail overlay window.
     pub struct ThumbnailOverlayWindow {
         pub hwnd: isize,
@@ -1516,7 +1657,7 @@ mod platform {
         pub fn set_position(&self, _x: i32, _y: i32, _w: i32, _h: i32) {}
         pub fn set_title(&mut self, _title: &str) {}
         pub fn set_visual_state(&mut self, _state: OverlayVisualState) {}
-        pub fn set_hint(&mut self, _hint: Option<String>) {}
+        pub fn set_hint(&mut self, _hint: Option<String>, _style: HintStyle) {}
         pub fn set_mru_rank(&mut self, _rank: Option<u8>) {}
         pub fn hide(&self) {}
         pub fn show(&self) {}
@@ -1556,11 +1697,19 @@ mod platform {
             None
         }
 
-        pub fn show_hints(&mut self, _hint_keys: &[String]) -> HashMap<String, isize> {
+        pub fn show_hints(
+            &mut self,
+            _hint_keys: &[String],
+            _preassigned: &HashMap<isize, String>,
+        ) -> HashMap<String, isize> {
             HashMap::new()
         }
 
         pub fn hide_hints(&mut self) {}
+
+        pub fn set_hint_editing(&mut self, _source_hwnd: isize, _character: String) {}
+
+        pub fn set_hint_style(&mut self, _source_hwnd: isize, _character: String, _reserved: bool) {}
 
         pub fn apply_mru_ranks(&mut self, _mru_list: &[isize], _enabled: bool) {}
 
@@ -1578,4 +1727,4 @@ mod platform {
 // Re-exports
 // ===========================================================================
 
-pub use platform::{OverlayManager, OverlayVisualState, ThumbnailOverlayWindow};
+pub use platform::{HintStyle, OverlayManager, OverlayVisualState, ThumbnailOverlayWindow};

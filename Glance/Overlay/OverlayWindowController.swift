@@ -13,6 +13,9 @@ final class OverlayWindowController {
     var onThumbnailDragSpringLoad: ((CGWindowID) -> Void)?
     /// Pin button clicked on a thumbnail — with the side the user chose.
     var onThumbnailPinClicked: ((WindowInfo, ThumbnailView.PinnedSide) -> Void)?
+    /// Hint pill clicked — user wants to rename the reservation for this
+    /// window. Routed to edit mode by the coordinator.
+    var onThumbnailHintPillClicked: ((CGWindowID) -> Void)?
 
     /// Window being dragged — skip animating it during layout updates.
     var draggingWindowID: CGWindowID?
@@ -106,6 +109,9 @@ final class OverlayWindowController {
                 thumbWindow.onPinClicked = { [weak self] windowInfo, side in
                     self?.onThumbnailPinClicked?(windowInfo, side)
                 }
+                thumbWindow.onHintPillClicked = { [weak self] windowID in
+                    self?.onThumbnailHintPillClicked?(windowID)
+                }
                 thumbWindow.orderFrontRegardless()
                 thumbnailWindows[slot.windowID] = thumbWindow
             }
@@ -120,10 +126,18 @@ final class OverlayWindowController {
         thumbnailWindows[windowID]?.frame
     }
 
-    /// Show hint labels on thumbnails. Returns mapping of character → windowID.
-    func showHints(startIndex: inout Int, hintKeys: [String]) -> [String: CGWindowID] {
+    /// Show hint labels on thumbnails. Preassigned entries take their key
+    /// regardless of grid position; the rest draw from `hintKeys` in grid
+    /// order, consuming from `startIndex`. Returns mapping of character →
+    /// windowID for all assignments made by this controller.
+    func showHints(
+        startIndex: inout Int,
+        hintKeys: [String],
+        preassigned: [CGWindowID: String] = [:]
+    ) -> [String: CGWindowID] {
         var mapping: [String: CGWindowID] = [:]
-        // Sort by window position (left-to-right, top-to-bottom) for predictable assignment
+        // Sort by window position (left-to-right, top-to-bottom) so the
+        // auto-assigned fill walks the grid deterministically.
         let sorted = thumbnailWindows.sorted { a, b in
             if abs(a.value.frame.midY - b.value.frame.midY) > 30 {
                 return a.value.frame.midY > b.value.frame.midY  // AppKit: higher Y = higher on screen
@@ -131,13 +145,32 @@ final class OverlayWindowController {
             return a.value.frame.midX < b.value.frame.midX
         }
         for (id, window) in sorted {
-            guard startIndex < hintKeys.count else { break }
+            if let reservedKey = preassigned[id] {
+                window.showHint(reservedKey, style: .reserved)
+                mapping[reservedKey] = id
+                continue
+            }
+            guard startIndex < hintKeys.count else { continue }
             let key = hintKeys[startIndex]
-            window.showHint(key)
+            window.showHint(key, style: .auto)
             mapping[key] = id
             startIndex += 1
         }
         return mapping
+    }
+
+    /// Switch a single thumbnail's pill into editing mode, optionally keeping
+    /// the currently displayed character. Used when the user Shift+<key>s or
+    /// clicks a pill to rename it.
+    func setHintEditing(windowID: CGWindowID, character: String) {
+        guard let window = thumbnailWindows[windowID] else { return }
+        window.showHint(character, style: .editing)
+    }
+
+    /// Restore a thumbnail's pill to a non-editing style after edit-mode exits.
+    func setHintStyle(windowID: CGWindowID, character: String, reserved: Bool) {
+        guard let window = thumbnailWindows[windowID] else { return }
+        window.showHint(character, style: reserved ? .reserved : .auto)
     }
 
     func hideHints() {

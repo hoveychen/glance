@@ -28,6 +28,24 @@ pub struct Config {
     /// brightness decreasing by recency. Default: true.
     #[serde(default = "default_mru_glow")]
     pub mru_glow_enabled: bool,
+    /// User-defined hint-key reservations. Reserved keys take priority over
+    /// auto-assigned ones so the user can blind-press the same key to reach
+    /// the same window regardless of layout shuffling.
+    #[serde(default)]
+    pub reservations: Vec<Reservation>,
+}
+
+/// A user-defined mapping from a window to a reserved hint key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Reservation {
+    /// The owning process's executable name (e.g. "chrome.exe").
+    pub owner_name: String,
+    /// Exact window title to match. `None` means "any window of this exe",
+    /// useful for single-window apps.
+    #[serde(default)]
+    pub title_pattern: Option<String>,
+    /// A single hint character (digit `1`-`9` or uppercase `A`-`Z`).
+    pub key: String,
 }
 
 fn default_left_split() -> f64 { 0.25 }
@@ -42,6 +60,7 @@ impl Default for Config {
             work_area_frame: None,
             swap_resize_mode: SwapResizeMode::default(),
             mru_glow_enabled: default_mru_glow(),
+            reservations: Vec::new(),
         }
     }
 }

@@ -38,6 +38,7 @@ final class ThumbnailView: NSView {
     private let pinnedOverlay = CALayer()
     private let pinnedLabel = CATextLayer()
     private let hintLayer = CATextLayer()
+    private let hintCaretLayer = CALayer()
     private let privatePlaceholder = CALayer()
     private let privateLockLabel = CATextLayer()
     private let privateSizeLabel = CATextLayer()
@@ -168,16 +169,24 @@ final class ThumbnailView: NSView {
         )
         addSubview(pinRightButton)
 
-        // Hint badge
+        // Hint pill — tri-state (auto / reserved / editing). The fill, border
+        // and caret are reconfigured in `applyHintStyle(_:)`; the layer itself
+        // is created once and reused.
         hintLayer.fontSize = 28
         hintLayer.font = NSFont.monospacedSystemFont(ofSize: 28, weight: .bold)
         hintLayer.foregroundColor = NSColor.white.cgColor
-        hintLayer.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.85).cgColor
         hintLayer.alignmentMode = .center
         hintLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
         hintLayer.cornerRadius = 6
+        hintLayer.borderWidth = 0
         hintLayer.isHidden = true
         layer?.addSublayer(hintLayer)
+
+        // Blinking caret, shown only while a window is in edit mode.
+        hintCaretLayer.backgroundColor = NSColor.white.cgColor
+        hintCaretLayer.cornerRadius = 1
+        hintCaretLayer.isHidden = true
+        layer?.addSublayer(hintCaretLayer)
 
         // Private browsing placeholder
         privatePlaceholder.backgroundColor = NSColor(white: 0.12, alpha: 1.0).cgColor
@@ -263,12 +272,21 @@ final class ThumbnailView: NSView {
         pinnedOverlay.frame = imageRect
         pinnedLabel.frame = CGRect(x: 0, y: (imageRect.height - 16) / 2, width: imageRect.width, height: 16)
 
-        // Hint badge centered on image
-        let hintSize: CGFloat = 40
-        hintLayer.frame = CGRect(
-            x: (bounds.width - hintSize) / 2,
-            y: (imageRect.height - hintSize) / 2,
-            width: hintSize, height: hintSize
+        // Hint pill centered on image. Width widens when editing so the caret
+        // has room to sit beside the existing character without clipping.
+        let hintH: CGFloat = 40
+        let hintW: CGFloat = currentHintStyle == .editing ? 56 : 40
+        let hintX = (bounds.width - hintW) / 2
+        let hintY = (imageRect.height - hintH) / 2
+        hintLayer.frame = CGRect(x: hintX, y: hintY, width: hintW, height: hintH)
+
+        // Caret sits 6pt from the right edge of the pill, vertically centered.
+        let caretW: CGFloat = 3
+        let caretH: CGFloat = 22
+        hintCaretLayer.frame = CGRect(
+            x: hintX + hintW - caretW - 6,
+            y: hintY + (hintH - caretH) / 2,
+            width: caretW, height: caretH
         )
 
         // Private browsing placeholder covers image area
@@ -288,6 +306,7 @@ final class ThumbnailView: NSView {
         activeLabel.contentsScale = scale
         pinnedLabel.contentsScale = scale
         hintLayer.contentsScale = scale
+        hintCaretLayer.contentsScale = scale
         iconLayer.contentsScale = scale
         privateLockLabel.contentsScale = scale
         privateSizeLabel.contentsScale = scale
@@ -397,22 +416,83 @@ final class ThumbnailView: NSView {
         CATransaction.commit()
     }
 
-    func showHint(_ character: String) {
+    /// Tri-state pill appearance for the hint badge.
+    /// - `auto`: system-assigned this turn — hollow outline so the user sees
+    ///   it's a "soft" key that may drift next launch.
+    /// - `reserved`: user-named — filled gold, visually stable across layouts.
+    /// - `editing`: cursor is pending a new character.
+    enum HintStyle { case auto, reserved, editing }
+
+    private(set) var currentHintStyle: HintStyle = .auto
+
+    /// The pill's hit-testable rect in the view's local coord space, or nil
+    /// when the pill isn't currently shown. The caller uses this to decide
+    /// whether a click landed on the pill (→ rename) or elsewhere on the
+    /// thumbnail (→ switch-to-window).
+    var hintPillRect: CGRect? {
+        hintLayer.isHidden ? nil : hintLayer.frame
+    }
+
+    func showHint(_ character: String, style: HintStyle) {
         hintLayer.string = character
+        currentHintStyle = style
+        applyHintStyle(style)
         hintLayer.isHidden = false
+        needsLayout = true
     }
 
     func hideHint() {
         hintLayer.isHidden = true
+        hintCaretLayer.isHidden = true
+        hintCaretLayer.removeAllAnimations()
     }
 
-    /// Update the hint badge to indicate pin mode (prepend pin icon).
+    private func applyHintStyle(_ style: HintStyle) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        switch style {
+        case .auto:
+            // Hollow: transparent fill, gold border.
+            hintLayer.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
+            hintLayer.borderColor = NSColor.systemYellow.cgColor
+            hintLayer.borderWidth = 2
+            hintCaretLayer.isHidden = true
+            hintCaretLayer.removeAllAnimations()
+        case .reserved:
+            // Filled: gold pill, no border.
+            hintLayer.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.9).cgColor
+            hintLayer.borderColor = NSColor.clear.cgColor
+            hintLayer.borderWidth = 0
+            hintCaretLayer.isHidden = true
+            hintCaretLayer.removeAllAnimations()
+        case .editing:
+            // Distinct blue fill + blinking caret — clearly a pending input.
+            hintLayer.backgroundColor = NSColor.systemBlue.withAlphaComponent(0.9).cgColor
+            hintLayer.borderColor = NSColor.white.withAlphaComponent(0.8).cgColor
+            hintLayer.borderWidth = 2
+            hintCaretLayer.isHidden = false
+            addCaretBlinkIfNeeded()
+        }
+        CATransaction.commit()
+    }
+
+    private func addCaretBlinkIfNeeded() {
+        if hintCaretLayer.animation(forKey: "blink") != nil { return }
+        let blink = CABasicAnimation(keyPath: "opacity")
+        blink.fromValue = 1.0
+        blink.toValue = 0.0
+        blink.duration = 0.5
+        blink.autoreverses = true
+        blink.repeatCount = .infinity
+        blink.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        hintCaretLayer.add(blink, forKey: "blink")
+    }
+
+    /// Update the hint pill to indicate pin mode (prepend pin icon).
     func showHintPinIcon() {
         guard !hintLayer.isHidden, let current = hintLayer.string as? String else { return }
-        // Avoid double-prepending
         if !current.hasPrefix("📌") {
             hintLayer.string = "📌\(current)"
-            // Widen the badge to fit the pin icon
             let wider = hintLayer.frame.width + 34
             hintLayer.frame = CGRect(
                 x: (bounds.width - wider) / 2,

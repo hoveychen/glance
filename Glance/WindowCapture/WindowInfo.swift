@@ -137,4 +137,10 @@ final class WindowInfo: Identifiable, Hashable {
         }
         return "\(ownerName) — \(title)"
     }
+
+    /// The owning app's bundle identifier, used to match reserved-key
+    /// mappings across window-ID reassignment and app restarts.
+    var bundleId: String? {
+        NSRunningApplication(processIdentifier: ownerPID)?.bundleIdentifier
+    }
 }

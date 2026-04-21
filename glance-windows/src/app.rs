@@ -91,6 +91,13 @@ pub struct GlanceApp {
     // Hint mode
     is_hint_mode: bool,
     hint_mapping: HashMap<String, isize>,
+    /// Hint-pill edit mode: the hwnd whose reserved key the user is currently
+    /// renaming (via Shift+<key>). `None` outside edit mode. While editing,
+    /// the next alpha/digit key commits; Backspace clears; Esc cancels.
+    hint_editing_hwnd: Option<isize>,
+    /// The key that was displayed on the pill when edit mode was entered —
+    /// used to restore the pill on Esc-cancel.
+    hint_editing_original_key: Option<String>,
 
     // Pinned reference (left side)
     pinned_left_hwnd: Option<isize>,
@@ -188,6 +195,8 @@ impl GlanceApp {
 
             is_hint_mode: false,
             hint_mapping: HashMap::new(),
+            hint_editing_hwnd: None,
+            hint_editing_original_key: None,
 
             pinned_left_hwnd: None,
             pinned_left_pid: None,
@@ -306,11 +315,14 @@ impl GlanceApp {
                     self.toggle_hint_mode();
                 }
             }
-            AppEvent::Input(InputEvent::HintKeyPressed(ch)) => {
-                self.handle_hint_key(ch);
+            AppEvent::Input(InputEvent::HintKeyPressed(ch, shift)) => {
+                self.handle_hint_key(ch, shift);
+            }
+            AppEvent::Input(InputEvent::HintBackspacePressed) => {
+                self.handle_hint_backspace();
             }
             AppEvent::Input(InputEvent::EscapePressed) => {
-                self.exit_hint_mode();
+                self.handle_hint_escape();
             }
             AppEvent::Overlay(OverlayEvent::ThumbnailClicked(hwnd)) => {
                 self.handle_thumbnail_click(hwnd);
@@ -349,6 +361,9 @@ impl GlanceApp {
                     PinSide::Right => ReferenceSide::Right,
                 };
                 self.pin_as_reference(hwnd, ref_side);
+            }
+            AppEvent::Overlay(OverlayEvent::HintPillClicked(hwnd)) => {
+                self.handle_hint_pill_clicked(hwnd);
             }
             AppEvent::WorkArea(WorkAreaEvent::ExitClicked) => {
                 self.deactivate();
@@ -1114,9 +1129,10 @@ impl GlanceApp {
         }
         self.is_hint_mode = true;
 
-        let hint_keys = generate_hint_keys();
+        let (preassigned, remaining_keys) = self.compute_hint_assignments();
+
         if let Some(ref mut overlay) = self.overlay_manager {
-            self.hint_mapping = overlay.show_hints(&hint_keys);
+            self.hint_mapping = overlay.show_hints(&remaining_keys, &preassigned);
         }
 
         if let Some(ref input) = self.input_manager {
@@ -1126,12 +1142,77 @@ impl GlanceApp {
         log::debug!("Hint mode entered with {} mappings", self.hint_mapping.len());
     }
 
+    /// Compute the reserved-key preassignments for the current window snapshot,
+    /// plus the remaining auto-fill keys (original `generate_hint_keys()` minus
+    /// any reserved keys — reserved keys are withheld from the pool even when
+    /// their target window is absent, so the slot stays frozen for the user).
+    fn compute_hint_assignments(&self) -> (HashMap<isize, String>, Vec<String>) {
+        let all_keys = generate_hint_keys();
+        let reservations = crate::config::load().reservations;
+        if reservations.is_empty() {
+            return (HashMap::new(), all_keys);
+        }
+
+        let windows = self.window_tracker.refresh();
+        let mut preassigned: HashMap<isize, String> = HashMap::new();
+        let mut used_keys: HashSet<String> = HashSet::new();
+        let mut used_hwnds: HashSet<isize> = HashSet::new();
+
+        for res in &reservations {
+            used_keys.insert(res.key.clone());
+            if let Some(hwnd) = Self::match_reservation(res, &windows, &used_hwnds) {
+                preassigned.insert(hwnd, res.key.clone());
+                used_hwnds.insert(hwnd);
+            }
+        }
+
+        let remaining: Vec<String> = all_keys
+            .into_iter()
+            .filter(|k| !used_keys.contains(k))
+            .collect();
+        (preassigned, remaining)
+    }
+
+    /// Find the best window in `windows` that matches a reservation, skipping
+    /// hwnds already claimed by an earlier reservation. Matching rules:
+    /// 1. Same `owner_name` (case-insensitive).
+    /// 2. If the reservation has a `title_pattern`, prefer exact-title match;
+    ///    else fall back to the sole candidate if only one exists (single-window
+    ///    apps). If there's a title pattern but zero exact matches and multiple
+    ///    candidates, no match — ambiguous.
+    /// 3. With no title pattern, pick the lowest hwnd for determinism.
+    fn match_reservation(
+        res: &crate::config::Reservation,
+        windows: &[crate::types::WindowInfo],
+        used: &HashSet<isize>,
+    ) -> Option<isize> {
+        let candidates: Vec<&crate::types::WindowInfo> = windows
+            .iter()
+            .filter(|w| !used.contains(&w.hwnd))
+            .filter(|w| w.owner_name.eq_ignore_ascii_case(&res.owner_name))
+            .collect();
+
+        if let Some(ref pattern) = res.title_pattern {
+            if let Some(exact) = candidates.iter().find(|w| &w.title == pattern) {
+                return Some(exact.hwnd);
+            }
+            if candidates.len() == 1 {
+                return Some(candidates[0].hwnd);
+            }
+            return None;
+        }
+
+        candidates.iter().map(|w| w.hwnd).min()
+    }
+
     fn exit_hint_mode(&mut self) {
         if !self.is_hint_mode {
             return;
         }
         self.is_hint_mode = false;
         self.hint_mapping.clear();
+        self.hint_editing_hwnd = None;
+        self.hint_editing_original_key = None;
 
         if let Some(ref mut overlay) = self.overlay_manager {
             overlay.hide_hints();
@@ -1144,15 +1225,158 @@ impl GlanceApp {
         log::debug!("Hint mode exited");
     }
 
-    fn handle_hint_key(&mut self, ch: char) {
+    fn handle_hint_key(&mut self, ch: char, shift: bool) {
         if !self.is_hint_mode {
             return;
         }
 
+        // In edit mode, any alpha/digit key commits a new reservation.
+        if self.hint_editing_hwnd.is_some() {
+            let key = ch.to_uppercase().to_string();
+            self.commit_hint_edit(key);
+            return;
+        }
+
         let key = ch.to_uppercase().to_string();
+
+        // Shift+<key> → enter edit mode for the window currently showing `key`.
+        if shift {
+            if let Some(&hwnd) = self.hint_mapping.get(&key) {
+                self.enter_hint_edit(hwnd, key);
+                return;
+            }
+            // Shift+<unknown-key> — ignore, don't exit the mode.
+            return;
+        }
+
         if let Some(&hwnd) = self.hint_mapping.get(&key) {
             self.exit_hint_mode();
             self.handle_thumbnail_click(hwnd);
+        }
+    }
+
+    /// Escape behaviour: while editing a pill, cancel the edit only; otherwise
+    /// exit hint mode entirely.
+    fn handle_hint_escape(&mut self) {
+        if self.hint_editing_hwnd.is_some() {
+            self.cancel_hint_edit();
+        } else {
+            self.exit_hint_mode();
+        }
+    }
+
+    /// Backspace: while editing a pill, clear that window's reservation (the
+    /// key returns to the auto-assignment pool). Outside editing, do nothing.
+    fn handle_hint_backspace(&mut self) {
+        if self.hint_editing_hwnd.is_some() {
+            self.clear_hint_edit_reservation();
+        }
+    }
+
+    /// Click landed directly on a hint pill — enter edit mode for that
+    /// window's reservation key. Mirrors Shift+<key> entry.
+    fn handle_hint_pill_clicked(&mut self, hwnd: isize) {
+        if !self.is_hint_mode {
+            return;
+        }
+        let current_key = match self
+            .hint_mapping
+            .iter()
+            .find_map(|(k, &h)| if h == hwnd { Some(k.clone()) } else { None })
+        {
+            Some(k) => k,
+            None => return,
+        };
+        self.enter_hint_edit(hwnd, current_key);
+    }
+
+    /// Flip a single pill into editing mode. Preserves the current displayed
+    /// character so the user sees what key they're replacing.
+    fn enter_hint_edit(&mut self, hwnd: isize, current_key: String) {
+        self.hint_editing_hwnd = Some(hwnd);
+        self.hint_editing_original_key = Some(current_key.clone());
+        if let Some(ref mut overlay) = self.overlay_manager {
+            overlay.set_hint_editing(hwnd, current_key);
+        }
+    }
+
+    /// Commit the edit: persist the reservation for the editing hwnd with
+    /// `new_key`, then refresh the whole hint grid so the new assignment is
+    /// reflected visually and the auto-pool is re-derived.
+    fn commit_hint_edit(&mut self, new_key: String) {
+        let hwnd = match self.hint_editing_hwnd {
+            Some(h) => h,
+            None => return,
+        };
+        let windows = self.window_tracker.refresh();
+        let Some(info) = windows.iter().find(|w| w.hwnd == hwnd) else {
+            self.cancel_hint_edit();
+            return;
+        };
+        let title_pattern = if info.title.is_empty() { None } else { Some(info.title.clone()) };
+        crate::config::update(|cfg| {
+            cfg.reservations
+                .retain(|r| !(r.owner_name.eq_ignore_ascii_case(&info.owner_name) && r.title_pattern == title_pattern));
+            cfg.reservations.retain(|r| r.key != new_key);
+            cfg.reservations.push(crate::config::Reservation {
+                owner_name: info.owner_name.clone(),
+                title_pattern,
+                key: new_key,
+            });
+        });
+        self.hint_editing_hwnd = None;
+        self.hint_editing_original_key = None;
+        self.refresh_hint_assignments();
+    }
+
+    /// Clear the reservation for the window currently being edited. The key
+    /// drops back into the auto-assignment pool on refresh.
+    fn clear_hint_edit_reservation(&mut self) {
+        let hwnd = match self.hint_editing_hwnd {
+            Some(h) => h,
+            None => return,
+        };
+        let windows = self.window_tracker.refresh();
+        let Some(info) = windows.iter().find(|w| w.hwnd == hwnd) else {
+            self.cancel_hint_edit();
+            return;
+        };
+        let title_pattern = if info.title.is_empty() { None } else { Some(info.title.clone()) };
+        let owner_name = info.owner_name.clone();
+        crate::config::update(|cfg| {
+            cfg.reservations
+                .retain(|r| !(r.owner_name.eq_ignore_ascii_case(&owner_name) && r.title_pattern == title_pattern));
+        });
+        self.hint_editing_hwnd = None;
+        self.hint_editing_original_key = None;
+        self.refresh_hint_assignments();
+    }
+
+    /// Cancel the current edit without persisting, restoring the previous pill
+    /// style (reserved iff the key is still present in the store, else auto).
+    fn cancel_hint_edit(&mut self) {
+        let (hwnd, original_key) = match (self.hint_editing_hwnd, self.hint_editing_original_key.clone()) {
+            (Some(h), Some(k)) => (h, k),
+            _ => return,
+        };
+        let reserved = crate::config::load()
+            .reservations
+            .iter()
+            .any(|r| r.key == original_key);
+        if let Some(ref mut overlay) = self.overlay_manager {
+            overlay.set_hint_style(hwnd, original_key, reserved);
+        }
+        self.hint_editing_hwnd = None;
+        self.hint_editing_original_key = None;
+    }
+
+    /// Re-derive the full hint grid from the current reservation store, used
+    /// after the store mutates while hint mode is still open.
+    fn refresh_hint_assignments(&mut self) {
+        self.hint_mapping.clear();
+        let (preassigned, remaining_keys) = self.compute_hint_assignments();
+        if let Some(ref mut overlay) = self.overlay_manager {
+            self.hint_mapping = overlay.show_hints(&remaining_keys, &preassigned);
         }
     }
 

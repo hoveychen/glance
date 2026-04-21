@@ -45,6 +45,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hintEventTap: CFMachPort?
     private var hintEventTapSource: CFRunLoopSource?
 
+    /// Hint-pill edit mode: the window whose reservation key the user is
+    /// currently renaming (via Shift+<key> or pill click). `nil` when not
+    /// editing. While non-nil, the next typed hint character commits; Esc
+    /// cancels; Backspace clears the reservation.
+    private var hintEditingWindowID: CGWindowID?
+    private var hintEditingOriginalKey: String?
+
     /// Option short-press detection.
     private var optionDownTimestamp: TimeInterval = 0
     private var optionWasCombined = false
@@ -572,6 +579,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     self.pinAsReference(windowInfo, side: side == .left ? .left : .right)
                 }
+            }
+            controller.onThumbnailHintPillClicked = { [weak self] windowID in
+                self?.handleHintPillClicked(windowID: windowID)
             }
             overlayControllers[idx] = controller
         }
@@ -1524,9 +1534,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.post(name: .glanceOptionKeyPressed, object: nil)
         hintMapping.removeAll()
 
+        let (preassigned, remainingKeys) = computeHintAssignments()
+
         var idx = 0
         for (_, controller) in overlayControllers.sorted(by: { $0.key < $1.key }) {
-            let partial = controller.showHints(startIndex: &idx, hintKeys: Self.hintKeys)
+            let partial = controller.showHints(
+                startIndex: &idx,
+                hintKeys: remainingKeys,
+                preassigned: preassigned
+            )
             hintMapping.merge(partial) { _, new in new }
         }
 
@@ -1569,6 +1585,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isHintMode = false
         isHintPinMode = false
         hintMapping.removeAll()
+        hintEditingWindowID = nil
+        hintEditingOriginalKey = nil
 
         for (_, controller) in overlayControllers {
             controller.hideHints()
@@ -1589,7 +1607,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleHintKey(_ event: NSEvent) {
-        // Escape → cancel
+        // In edit mode, route to the edit-mode key handler first.
+        if hintEditingWindowID != nil {
+            handleHintEditingKey(event)
+            return
+        }
+
+        // Escape → cancel hint mode
         if event.keyCode == 53 {
             exitHintMode()
             return
@@ -1602,6 +1626,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let key = String(chars.prefix(1))
+        let shiftHeld = event.modifierFlags.contains(.shift)
+
+        // Shift+<key> → enter edit mode for the window currently showing that
+        // key. The user names (not locks) the key: the next typed letter
+        // replaces the current assignment. Any shift-held press that doesn't
+        // resolve to a mapped key is swallowed rather than exiting hint mode,
+        // so pressing e.g. Shift+1 (which yields "!") doesn't surprise-quit.
+        if shiftHeld {
+            if let windowID = hintMapping[key] {
+                enterHintEditMode(windowID: windowID, currentKey: key)
+            }
+            return
+        }
 
         // '#' toggles pin sub-mode: next key press pins instead of swapping
         if key == "#" && !isHintPinMode {
@@ -1627,6 +1664,176 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             exitHintMode()
         }
+    }
+
+    /// Called when the user clicks directly on a pill. Enters edit mode for
+    /// that window using its currently displayed key. No-ops outside hint
+    /// mode or when the window isn't currently mapped.
+    private func handleHintPillClicked(windowID: CGWindowID) {
+        guard isHintMode else { return }
+        guard let currentKey = hintMapping.first(where: { $0.value == windowID })?.key else {
+            return
+        }
+        enterHintEditMode(windowID: windowID, currentKey: currentKey)
+    }
+
+    /// Enter edit mode for a single pill. Preserves the current displayed key
+    /// so the user can see what they're replacing.
+    private func enterHintEditMode(windowID: CGWindowID, currentKey: String) {
+        hintEditingWindowID = windowID
+        hintEditingOriginalKey = currentKey
+        for (_, controller) in overlayControllers {
+            controller.setHintEditing(windowID: windowID, character: currentKey)
+        }
+    }
+
+    /// Handle a keypress while a pill is in edit mode.
+    private func handleHintEditingKey(_ event: NSEvent) {
+        // Escape → cancel, revert pill to its previous style.
+        if event.keyCode == 53 {
+            cancelHintEdit()
+            return
+        }
+        // Delete/Backspace → clear reservation for this window.
+        if event.keyCode == 51 || event.keyCode == 117 {
+            clearHintEditReservation()
+            return
+        }
+
+        guard let chars = event.charactersIgnoringModifiers?.lowercased(),
+              let ch = chars.first else {
+            cancelHintEdit()
+            return
+        }
+        let key = String(ch)
+
+        // Valid hint chars: digits 1-9 or letters a-z.
+        let isValid = (key.count == 1) &&
+            (Self.hintKeys.contains(key))
+        guard isValid else {
+            cancelHintEdit()
+            return
+        }
+
+        commitHintEdit(newKey: key)
+    }
+
+    /// Commit the current edit: persist the reservation and refresh pill styles
+    /// across all overlays.
+    private func commitHintEdit(newKey: String) {
+        guard let windowID = hintEditingWindowID,
+              let windows = windowTracker.lastKnownWindows,
+              let info = windows.first(where: { $0.windowID == windowID }),
+              let bundleId = info.bundleId else {
+            cancelHintEdit()
+            return
+        }
+        ReservationStore.shared.set(
+            bundleId: bundleId,
+            titlePattern: info.title.isEmpty ? nil : info.title,
+            key: newKey
+        )
+        hintEditingWindowID = nil
+        hintEditingOriginalKey = nil
+        refreshHintAssignments()
+    }
+
+    /// Clear the reservation for the window currently being edited (if any).
+    /// The key returns to the auto-assignment pool.
+    private func clearHintEditReservation() {
+        guard let windowID = hintEditingWindowID,
+              let windows = windowTracker.lastKnownWindows,
+              let info = windows.first(where: { $0.windowID == windowID }),
+              let bundleId = info.bundleId else {
+            cancelHintEdit()
+            return
+        }
+        ReservationStore.shared.clear(
+            bundleId: bundleId,
+            titlePattern: info.title.isEmpty ? nil : info.title
+        )
+        hintEditingWindowID = nil
+        hintEditingOriginalKey = nil
+        refreshHintAssignments()
+    }
+
+    /// Cancel the current edit without persisting, restoring the previous
+    /// (auto or reserved) pill style for the edited window.
+    private func cancelHintEdit() {
+        guard let windowID = hintEditingWindowID,
+              let originalKey = hintEditingOriginalKey else { return }
+        let reserved = ReservationStore.shared.all.contains { $0.key == originalKey }
+        for (_, controller) in overlayControllers {
+            controller.setHintStyle(windowID: windowID, character: originalKey, reserved: reserved)
+        }
+        hintEditingWindowID = nil
+        hintEditingOriginalKey = nil
+    }
+
+    /// Re-derive the full hint grid from the current reservation store, used
+    /// after the store mutates while hint mode is still open.
+    private func refreshHintAssignments() {
+        hintMapping.removeAll()
+        let (preassigned, remainingKeys) = computeHintAssignments()
+        var idx = 0
+        for (_, controller) in overlayControllers.sorted(by: { $0.key < $1.key }) {
+            let partial = controller.showHints(
+                startIndex: &idx,
+                hintKeys: remainingKeys,
+                preassigned: preassigned
+            )
+            hintMapping.merge(partial) { _, new in new }
+        }
+    }
+
+    /// Build the preassignment map for hint mode from the reservation store.
+    /// Returns `(preassigned, remainingKeys)`: `preassigned` maps a windowID
+    /// to its reserved character; `remainingKeys` is the subset of the full
+    /// hint alphabet that is still available for auto-assignment (reserved
+    /// keys are withheld even when their target window is absent, so the
+    /// slot stays frozen and muscle memory is preserved).
+    private func computeHintAssignments() -> (preassigned: [CGWindowID: String], remaining: [String]) {
+        let reservations = ReservationStore.shared.all
+        guard !reservations.isEmpty else {
+            return ([:], Self.hintKeys)
+        }
+
+        let windows = windowTracker.lastKnownWindows ?? []
+        var preassigned: [CGWindowID: String] = [:]
+        var usedKeys: Set<String> = []
+        var usedWindowIDs: Set<CGWindowID> = []
+
+        for res in reservations {
+            usedKeys.insert(res.key)
+            if let matched = matchReservation(res, in: windows, excluding: usedWindowIDs) {
+                preassigned[matched.windowID] = res.key
+                usedWindowIDs.insert(matched.windowID)
+            }
+        }
+
+        let remaining = Self.hintKeys.filter { !usedKeys.contains($0) }
+        return (preassigned, remaining)
+    }
+
+    /// Pick the window (if any) a reservation refers to, skipping any already
+    /// claimed by an earlier reservation. Exact title match wins; otherwise
+    /// a single-candidate app falls through; ambiguous matches return nil.
+    private func matchReservation(
+        _ res: Reservation,
+        in windows: [WindowInfo],
+        excluding used: Set<CGWindowID>
+    ) -> WindowInfo? {
+        let candidates = windows.filter { w in
+            guard !used.contains(w.windowID) else { return false }
+            return w.bundleId == res.bundleId
+        }
+        if let pattern = res.titlePattern {
+            if let exact = candidates.first(where: { $0.title == pattern }) {
+                return exact
+            }
+            return candidates.count == 1 ? candidates.first : nil
+        }
+        return candidates.min(by: { $0.windowID < $1.windowID })
     }
 
     // MARK: - Work Area Helpers

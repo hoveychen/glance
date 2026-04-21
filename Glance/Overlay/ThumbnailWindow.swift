@@ -9,6 +9,10 @@ final class ThumbnailWindow: NSWindow {
 
     let windowID: CGWindowID
     var onClick: ((WindowInfo) -> Void)?
+    /// Fires when the user clicks directly on the hint pill (while hint mode
+    /// shows it). Separates rename-intent from the larger switch-to-window
+    /// click target.
+    var onHintPillClicked: ((CGWindowID) -> Void)?
     var onDragMoved: ((CGWindowID, CGPoint) -> Void)?
     var onDragComplete: ((CGWindowID) -> Void)?
     var onHoverStart: ((CGWindowID) -> Void)?
@@ -119,7 +123,16 @@ final class ThumbnailWindow: NSWindow {
             self.alphaValue = 1.0
             onDragComplete?(windowID)
         } else {
-            // It was a click, not a drag
+            // It was a click, not a drag. If the click landed on the hint
+            // pill (while hint mode is active), treat it as rename-intent
+            // rather than switch-to-window.
+            if let pillRect = thumbnailView.hintPillRect {
+                let localPoint = event.locationInWindow  // contentView fills the window
+                if pillRect.contains(localPoint) {
+                    onHintPillClicked?(windowID)
+                    return
+                }
+            }
             guard let info = thumbnailView.windowInfo else { return }
             logger.warning("Thumbnail clicked: \(info.displayName)")
             onClick?(info)
@@ -139,8 +152,12 @@ final class ThumbnailWindow: NSWindow {
         thumbnailView.updateImage(image)
     }
 
-    func showHint(_ character: String) {
-        thumbnailView.showHint(character)
+    func showHint(_ character: String, style: ThumbnailView.HintStyle) {
+        thumbnailView.showHint(character, style: style)
+    }
+
+    func hintStyle() -> ThumbnailView.HintStyle {
+        thumbnailView.currentHintStyle
     }
 
     func hideHint() {

@@ -19,8 +19,13 @@ use std::sync::mpsc::Sender;
 pub enum InputEvent {
     /// Alt key double-tapped (toggle hint mode).
     AltDoubleTap,
-    /// A hint key was pressed while in hint mode (e.g., '1', 'A').
-    HintKeyPressed(char),
+    /// A hint key was pressed while in hint mode (e.g., '1', 'A'). The second
+    /// field is true when Shift was held at the time of the press — used to
+    /// enter pill edit mode.
+    HintKeyPressed(char, bool),
+    /// Backspace pressed while in hint mode — clears the reservation of the
+    /// pill currently being edited (no-op if not editing).
+    HintBackspacePressed,
     /// Escape pressed while in hint mode (cancel).
     EscapePressed,
     /// Global hotkey triggered (Ctrl+Alt+H).
@@ -38,8 +43,8 @@ mod platform {
     use std::time::Instant;
     use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VIRTUAL_KEY, VK_A, VK_ESCAPE, VK_H, VK_LCONTROL, VK_LMENU, VK_RCONTROL,
-        VK_RMENU, VK_Z, VK_0, VK_9,
+        GetAsyncKeyState, VIRTUAL_KEY, VK_A, VK_BACK, VK_ESCAPE, VK_H, VK_LCONTROL, VK_LMENU,
+        VK_LSHIFT, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_Z, VK_0, VK_9,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT,
@@ -284,8 +289,15 @@ mod platform {
                 return LRESULT(1); // Consume.
             }
 
+            if vk == VK_BACK.0 as u32 {
+                send_event(state, InputEvent::HintBackspacePressed);
+                drop(guard);
+                return LRESULT(1); // Consume.
+            }
+
             if let Some(ch) = vk_to_char(vk) {
-                send_event(state, InputEvent::HintKeyPressed(ch));
+                let shift = is_key_down(VK_LSHIFT) || is_key_down(VK_RSHIFT);
+                send_event(state, InputEvent::HintKeyPressed(ch, shift));
                 drop(guard);
                 return LRESULT(1); // Consume.
             }
