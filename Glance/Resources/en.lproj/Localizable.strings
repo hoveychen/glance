@@ -65,6 +65,9 @@
 "thumbnail.pinLeft.accessibility"  = "Pin as Left Reference";
 "thumbnail.pinRight.accessibility" = "Pin as Right Reference";
 
+/* Hint pill — edit mode helper banner */
+"hint.editing.helper" = "Press any key · Esc to cancel";
+
 /* Onboarding — permission phase */
 "onboarding.welcome.title"                        = "Welcome to Glance";
 "onboarding.welcome.subtitle"                     = "Grant these permissions to get started.";

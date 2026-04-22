@@ -72,6 +72,9 @@ fn en(key: &str) -> &'static str {
         "overlay.active"           => "Active",
         "overlay.pinned"           => "Pinned",
 
+        // Hint pill — edit mode helper banner
+        "hint.editing.helper"      => "Press any key \u{00B7} Esc to cancel",
+
         // Unknown keys render blank so regressions surface visibly in the UI.
         _ => "",
     }
@@ -97,6 +100,9 @@ fn zh_hans(key: &str) -> &'static str {
         // Thumbnail overlay
         "overlay.active"           => "当前",
         "overlay.pinned"           => "已固定",
+
+        // Hint pill — edit mode helper banner
+        "hint.editing.helper"      => "按下任意键 \u{00B7} Esc 取消",
 
         // Unknown keys fall back to English so nothing renders blank.
         other => en(other),

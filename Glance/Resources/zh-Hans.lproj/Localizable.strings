@@ -65,6 +65,9 @@
 "thumbnail.pinLeft.accessibility"  = "固定为左侧参考";
 "thumbnail.pinRight.accessibility" = "固定为右侧参考";
 
+/* Hint pill — edit mode helper banner */
+"hint.editing.helper" = "按下任意键 · Esc 取消";
+
 /* Onboarding — permission phase */
 "onboarding.welcome.title"                        = "欢迎使用 Glance";
 "onboarding.welcome.subtitle"                     = "请授予以下权限后开始使用。";

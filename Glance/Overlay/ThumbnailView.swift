@@ -38,7 +38,7 @@ final class ThumbnailView: NSView {
     private let pinnedOverlay = CALayer()
     private let pinnedLabel = CATextLayer()
     private let hintLayer = CATextLayer()
-    private let hintCaretLayer = CALayer()
+    private let hintHelperLayer = CATextLayer()
     private let privatePlaceholder = CALayer()
     private let privateLockLabel = CATextLayer()
     private let privateSizeLabel = CATextLayer()
@@ -169,9 +169,9 @@ final class ThumbnailView: NSView {
         )
         addSubview(pinRightButton)
 
-        // Hint pill — tri-state (auto / reserved / editing). The fill, border
-        // and caret are reconfigured in `applyHintStyle(_:)`; the layer itself
-        // is created once and reused.
+        // Hint pill — tri-state (auto / reserved / editing). Fill and border
+        // are reconfigured in `applyHintStyle(_:)`; the displayed string is
+        // rewritten in `showHint(_:style:)` (in editing it becomes "X → ?").
         hintLayer.fontSize = 28
         hintLayer.font = NSFont.monospacedSystemFont(ofSize: 28, weight: .bold)
         hintLayer.foregroundColor = NSColor.white.cgColor
@@ -182,11 +182,21 @@ final class ThumbnailView: NSView {
         hintLayer.isHidden = true
         layer?.addSublayer(hintLayer)
 
-        // Blinking caret, shown only while a window is in edit mode.
-        hintCaretLayer.backgroundColor = NSColor.white.cgColor
-        hintCaretLayer.cornerRadius = 1
-        hintCaretLayer.isHidden = true
-        layer?.addSublayer(hintCaretLayer)
+        // Helper banner shown only while a pill is in edit mode. Tells the
+        // user how to confirm/cancel since the pill itself is silent about it.
+        hintHelperLayer.string = NSLocalizedString(
+            "hint.editing.helper",
+            comment: "Helper text shown below the hint pill while the user is picking a new key"
+        )
+        hintHelperLayer.fontSize = 11
+        hintHelperLayer.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        hintHelperLayer.foregroundColor = NSColor.white.cgColor
+        hintHelperLayer.backgroundColor = NSColor.black.withAlphaComponent(0.75).cgColor
+        hintHelperLayer.alignmentMode = .center
+        hintHelperLayer.cornerRadius = 4
+        hintHelperLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        hintHelperLayer.isHidden = true
+        layer?.addSublayer(hintHelperLayer)
 
         // Private browsing placeholder
         privatePlaceholder.backgroundColor = NSColor(white: 0.12, alpha: 1.0).cgColor
@@ -272,22 +282,23 @@ final class ThumbnailView: NSView {
         pinnedOverlay.frame = imageRect
         pinnedLabel.frame = CGRect(x: 0, y: (imageRect.height - 16) / 2, width: imageRect.width, height: 16)
 
-        // Hint pill centered on image. Width widens when editing so the caret
-        // has room to sit beside the existing character without clipping.
+        // Hint pill centered on image. Width widens when editing to fit the
+        // "X → ?" replacement prompt.
         let hintH: CGFloat = 40
-        let hintW: CGFloat = currentHintStyle == .editing ? 56 : 40
+        let hintW: CGFloat = currentHintStyle == .editing ? 92 : 40
         let hintX = (bounds.width - hintW) / 2
         let hintY = (imageRect.height - hintH) / 2
         hintLayer.frame = CGRect(x: hintX, y: hintY, width: hintW, height: hintH)
 
-        // Caret sits 6pt from the right edge of the pill, vertically centered.
-        let caretW: CGFloat = 3
-        let caretH: CGFloat = 22
-        hintCaretLayer.frame = CGRect(
-            x: hintX + hintW - caretW - 6,
-            y: hintY + (hintH - caretH) / 2,
-            width: caretW, height: caretH
-        )
+        // Helper banner sits just below the pill, only visible in editing.
+        let helperFont = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let helperText = (hintHelperLayer.string as? String) ?? ""
+        let helperTextW = ceil((helperText as NSString).size(withAttributes: [.font: helperFont]).width)
+        let helperW = helperTextW + 16
+        let helperH: CGFloat = 18
+        let helperX = (bounds.width - helperW) / 2
+        let helperY = hintY - helperH - 4
+        hintHelperLayer.frame = CGRect(x: helperX, y: helperY, width: helperW, height: helperH)
 
         // Private browsing placeholder covers image area
         privatePlaceholder.frame = imageRect
@@ -306,7 +317,7 @@ final class ThumbnailView: NSView {
         activeLabel.contentsScale = scale
         pinnedLabel.contentsScale = scale
         hintLayer.contentsScale = scale
-        hintCaretLayer.contentsScale = scale
+        hintHelperLayer.contentsScale = scale
         iconLayer.contentsScale = scale
         privateLockLabel.contentsScale = scale
         privateSizeLabel.contentsScale = scale
@@ -420,7 +431,8 @@ final class ThumbnailView: NSView {
     /// - `auto`: system-assigned this turn — hollow outline so the user sees
     ///   it's a "soft" key that may drift next launch.
     /// - `reserved`: user-named — filled gold, visually stable across layouts.
-    /// - `editing`: cursor is pending a new character.
+    /// - `editing`: blue pill displaying "X → ?" plus a helper banner below
+    ///   prompting the user to press a new key (or Esc to cancel).
     enum HintStyle { case auto, reserved, editing }
 
     private(set) var currentHintStyle: HintStyle = .auto
@@ -434,17 +446,18 @@ final class ThumbnailView: NSView {
     }
 
     func showHint(_ character: String, style: HintStyle) {
-        hintLayer.string = character
+        hintLayer.string = (style == .editing) ? "\(character) → ?" : character
         currentHintStyle = style
         applyHintStyle(style)
         hintLayer.isHidden = false
         needsLayout = true
+        window?.invalidateCursorRects(for: self)
     }
 
     func hideHint() {
         hintLayer.isHidden = true
-        hintCaretLayer.isHidden = true
-        hintCaretLayer.removeAllAnimations()
+        hintHelperLayer.isHidden = true
+        window?.invalidateCursorRects(for: self)
     }
 
     private func applyHintStyle(_ style: HintStyle) {
@@ -456,36 +469,28 @@ final class ThumbnailView: NSView {
             hintLayer.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
             hintLayer.borderColor = NSColor.systemYellow.cgColor
             hintLayer.borderWidth = 2
-            hintCaretLayer.isHidden = true
-            hintCaretLayer.removeAllAnimations()
+            hintHelperLayer.isHidden = true
         case .reserved:
             // Filled: gold pill, no border.
             hintLayer.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.9).cgColor
             hintLayer.borderColor = NSColor.clear.cgColor
             hintLayer.borderWidth = 0
-            hintCaretLayer.isHidden = true
-            hintCaretLayer.removeAllAnimations()
+            hintHelperLayer.isHidden = true
         case .editing:
-            // Distinct blue fill + blinking caret — clearly a pending input.
+            // Distinct blue fill + helper banner — unambiguously "pick a key".
             hintLayer.backgroundColor = NSColor.systemBlue.withAlphaComponent(0.9).cgColor
             hintLayer.borderColor = NSColor.white.withAlphaComponent(0.8).cgColor
             hintLayer.borderWidth = 2
-            hintCaretLayer.isHidden = false
-            addCaretBlinkIfNeeded()
+            hintHelperLayer.isHidden = false
         }
         CATransaction.commit()
     }
 
-    private func addCaretBlinkIfNeeded() {
-        if hintCaretLayer.animation(forKey: "blink") != nil { return }
-        let blink = CABasicAnimation(keyPath: "opacity")
-        blink.fromValue = 1.0
-        blink.toValue = 0.0
-        blink.duration = 0.5
-        blink.autoreverses = true
-        blink.repeatCount = .infinity
-        blink.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        hintCaretLayer.add(blink, forKey: "blink")
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if !hintLayer.isHidden {
+            addCursorRect(hintLayer.frame, cursor: .pointingHand)
+        }
     }
 
     /// Update the hint pill to indicate pin mode (prepend pin icon).
@@ -500,6 +505,7 @@ final class ThumbnailView: NSView {
                 width: wider,
                 height: hintLayer.frame.height
             )
+            window?.invalidateCursorRects(for: self)
         }
     }
 

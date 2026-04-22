@@ -69,13 +69,15 @@ mod platform {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DrawIconEx, GetClientRect, GetCursorPos,
-        GetWindowLongPtrW, RegisterClassExW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-        GWLP_USERDATA, HTCLIENT, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOSIZE,
+        GetWindowLongPtrW, LoadCursorW, RegisterClassExW, SetCursor, SetWindowLongPtrW,
+        SetWindowPos, ShowWindow,
+        GWLP_USERDATA, HTCLIENT, HWND_TOPMOST, IDC_HAND, SWP_NOACTIVATE, SWP_NOSIZE,
         SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP,
-        WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED,
+        WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED,
         WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, DI_NORMAL,
         SetLayeredWindowAttributes, LWA_ALPHA,
     };
+    use windows::Win32::Graphics::Gdi::ScreenToClient;
 
     /// WM_MOUSEHOVER (0x02A1) — from Win32 Controls, defined as raw constant
     /// to avoid adding a Win32_UI_Controls feature dependency.
@@ -128,7 +130,7 @@ mod platform {
     /// sync with `paint_hint_badge` so click-testing matches what the user
     /// sees.
     fn hint_badge_rect(client: &RECT, style: HintStyle) -> RECT {
-        let badge_w: i32 = if style == HintStyle::Editing { 56 } else { 40 };
+        let badge_w: i32 = if style == HintStyle::Editing { 92 } else { 40 };
         let badge_h: i32 = 40;
         let cx = (client.left + client.right) / 2;
         let cy = (client.top + client.bottom) / 2;
@@ -519,6 +521,26 @@ mod platform {
                 LRESULT(0)
             }
 
+            WM_SETCURSOR => {
+                // Show the pointing-hand cursor when the mouse is over the
+                // hint pill so users discover it can be clicked to rename.
+                if state.hint_char.is_some() {
+                    let mut pt = POINT::default();
+                    if GetCursorPos(&mut pt).is_ok() && ScreenToClient(hwnd, &mut pt).as_bool() {
+                        let mut client_rect = RECT::default();
+                        let _ = GetClientRect(hwnd, &mut client_rect);
+                        let badge = hint_badge_rect(&client_rect, state.hint_style);
+                        if point_in_rect(pt.x, pt.y, &badge) {
+                            if let Ok(cursor) = LoadCursorW(None, IDC_HAND) {
+                                let _ = SetCursor(cursor);
+                                return LRESULT(1);
+                            }
+                        }
+                    }
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
@@ -647,6 +669,9 @@ mod platform {
         // --- Hint badge ---
         if let Some(ref hint) = state.hint_char {
             paint_hint_badge(hdc, &client_rect, hint, state.hint_style);
+            if state.hint_style == HintStyle::Editing {
+                paint_hint_helper(hdc, &client_rect);
+            }
         }
 
         let _ = EndPaint(hwnd, &ps);
@@ -912,7 +937,8 @@ mod platform {
             }
         }
 
-        // White bold text — rendered left-of-center when editing, centered otherwise.
+        // White bold text. In editing mode we render "X → ?" so users see
+        // the prompt to type a new key; otherwise just the hint character.
         let font = CreateFontW(
             24,
             0, 0, 0,
@@ -924,19 +950,13 @@ mod platform {
         SetTextColor(hdc, windows::Win32::Foundation::COLORREF(COLOR_TEXT_WHITE));
         SetBkMode(hdc, TRANSPARENT);
 
-        let hint_wide = encode_wide_no_null(hint);
-        let mut text_rect = if style == HintStyle::Editing {
-            // Shrink the text rect so the char sits on the left, leaving ~16px
-            // on the right for the caret.
-            RECT {
-                left: badge_rect.left,
-                top: badge_rect.top,
-                right: badge_rect.right - 16,
-                bottom: badge_rect.bottom,
-            }
+        let display_text = if style == HintStyle::Editing {
+            format!("{} \u{2192} ?", hint)
         } else {
-            badge_rect
+            hint.to_string()
         };
+        let hint_wide = encode_wide_no_null(&display_text);
+        let mut text_rect = badge_rect;
         DrawTextW(
             hdc,
             &mut hint_wide.clone(),
@@ -946,25 +966,55 @@ mod platform {
 
         SelectObject(hdc, old_font);
         let _ = DeleteObject(font);
+    }
 
-        // Caret bar — the paint pass is synchronous so we can't blink here; we
-        // draw it solid and rely on the caller repainting via a timer if the
-        // blink animation is desired. For this pass the caret is always visible.
-        if style == HintStyle::Editing {
-            let caret_w = 3;
-            let caret_h = 22;
-            let caret_cy = (badge_rect.top + badge_rect.bottom) / 2;
-            let caret_rect = RECT {
-                left: badge_rect.right - caret_w - 6,
-                top: caret_cy - caret_h / 2,
-                right: badge_rect.right - 6,
-                bottom: caret_cy + caret_h / 2,
-            };
-            let caret_brush =
-                CreateSolidBrush(windows::Win32::Foundation::COLORREF(COLOR_TEXT_WHITE));
-            FillRect(hdc, &caret_rect, caret_brush);
-            let _ = DeleteObject(caret_brush);
-        }
+    /// Paint a small helper banner just below the hint badge, telling the user
+    /// what to do while in editing mode. Mirrors the macOS hint helper layer.
+    unsafe fn paint_hint_helper(hdc: windows::Win32::Graphics::Gdi::HDC, rect: &RECT) {
+        let badge_rect = hint_badge_rect(rect, HintStyle::Editing);
+
+        let text = crate::strings::t("hint.editing.helper");
+        let text_wide = encode_wide_no_null(text);
+
+        // Measure text width with the helper font so the banner snugs around it.
+        let font = CreateFontW(
+            14,
+            0, 0, 0,
+            FW_NORMAL.0 as i32,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            PCWSTR(encode_wide("Segoe UI\0").as_ptr()),
+        );
+        let old_font = SelectObject(hdc, font);
+        SetTextColor(hdc, windows::Win32::Foundation::COLORREF(COLOR_TEXT_WHITE));
+        SetBkMode(hdc, TRANSPARENT);
+
+        // Generous fixed-width box centered horizontally beneath the badge.
+        // Sized to fit the longest known translation without clipping.
+        let banner_w: i32 = 240;
+        let banner_h: i32 = 22;
+        let cx = (badge_rect.left + badge_rect.right) / 2;
+        let banner_rect = RECT {
+            left: cx - banner_w / 2,
+            top: badge_rect.bottom + 4,
+            right: cx + banner_w / 2,
+            bottom: badge_rect.bottom + 4 + banner_h,
+        };
+
+        // Solid dark background — approximates the macOS 0.75-alpha black pill.
+        let bg = CreateSolidBrush(windows::Win32::Foundation::COLORREF(rgb(20, 20, 20)));
+        FillRect(hdc, &banner_rect, bg);
+        let _ = DeleteObject(bg);
+
+        let mut draw_rect = banner_rect;
+        DrawTextW(
+            hdc,
+            &mut text_wide.clone(),
+            &mut draw_rect,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+
+        SelectObject(hdc, old_font);
+        let _ = DeleteObject(font);
     }
 
     // -----------------------------------------------------------------------
