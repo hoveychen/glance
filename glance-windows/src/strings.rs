@@ -59,6 +59,12 @@ fn en(key: &str) -> &'static str {
         "tray.resize.preserve"     => "Preserve Aspect Ratio",
         "tray.resize.clamp"        => "Clamp Max Width / Height",
         "tray.mru_glow"            => "Highlight recent thumbnails",
+        "tray.hotkey"              => "Activation Hotkey",
+        "tray.hint_trigger"        => "Hint Trigger Key",
+        "tray.hint_trigger.alt"    => "Alt (Default)",
+        "tray.hint_trigger.ctrl"   => "Ctrl",
+        "tray.hint_trigger.shift"  => "Shift",
+        "tray.hint_trigger.win"    => "Win (conflicts with Start menu)",
         "tray.quit"                => "Quit",
 
         // Work area surface
@@ -88,6 +94,12 @@ fn zh_hans(key: &str) -> &'static str {
         "tray.resize.preserve"     => "保持宽高比",
         "tray.resize.clamp"        => "分别限制最大宽/高",
         "tray.mru_glow"            => "高亮最近使用的缩略图",
+        "tray.hotkey"              => "激活快捷键",
+        "tray.hint_trigger"        => "提示触发键",
+        "tray.hint_trigger.alt"    => "Alt（默认）",
+        "tray.hint_trigger.ctrl"   => "Ctrl",
+        "tray.hint_trigger.shift"  => "Shift",
+        "tray.hint_trigger.win"    => "Win（与开始菜单冲突）",
         "tray.quit"                => "退出",
 
         // Work area surface

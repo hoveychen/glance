@@ -28,6 +28,12 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
                                        comment: "Settings toolbar — Window panel label"),
               symbol: "macwindow",
               make: { WindowSettingsViewController() }),
+        Panel(identifier: .init("Shortcut"),
+              label: NSLocalizedString("settings.panel.shortcut",
+                                       value: "Shortcut",
+                                       comment: "Settings toolbar — Shortcut panel label"),
+              symbol: "command",
+              make: { ShortcutSettingsViewController() }),
     ]
 
     private var current: NSViewController?

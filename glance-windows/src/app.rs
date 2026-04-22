@@ -307,6 +307,26 @@ impl GlanceApp {
                     self.refresh_mru_highlights();
                 }
             }
+            AppEvent::Tray(TrayAction::SetActivationHotkey(hk)) => {
+                log::info!(
+                    "Activation hotkey changed via tray: mods=0x{:x} vk=0x{:x}",
+                    hk.modifiers,
+                    hk.vk
+                );
+                crate::config::update(|c| {
+                    c.activation_hotkey = hk;
+                });
+                // No extra wiring needed — input.rs reads the cached config
+                // on every keydown, so the new combo fires immediately.
+            }
+            AppEvent::Tray(TrayAction::SetHintTrigger(kind)) => {
+                log::info!("Hint trigger changed via tray: {:?}", kind);
+                crate::config::update(|c| {
+                    c.hint_trigger = kind;
+                });
+                // input.rs re-reads the cached config on every keystroke, so
+                // the new trigger key is picked up on the next key event.
+            }
             AppEvent::Input(InputEvent::ToggleHotkey) => {
                 self.toggle_active();
             }

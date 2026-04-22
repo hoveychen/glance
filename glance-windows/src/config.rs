@@ -33,6 +33,64 @@ pub struct Config {
     /// the same window regardless of layout shuffling.
     #[serde(default)]
     pub reservations: Vec<Reservation>,
+    /// User-customizable global hotkey that toggles the Glance work area.
+    /// Defaults to Ctrl+Alt+H. Editing requires hand-editing config.json —
+    /// Windows has no Settings UI yet.
+    #[serde(default)]
+    pub activation_hotkey: ActivationHotkey,
+    /// Which modifier key's *double-tap* opens hint mode (flashes letter
+    /// pills on thumbnails). Default: Alt, matching the original behavior.
+    #[serde(default)]
+    pub hint_trigger: HintTriggerKind,
+}
+
+/// The single modifier key whose double-tap toggles hint mode. Stored as a
+/// stable lowercase string rather than a Win32 VK code so the JSON survives
+/// SDK upgrades and stays human-editable.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HintTriggerKind {
+    Alt,
+    Ctrl,
+    Shift,
+    Win,
+}
+
+impl Default for HintTriggerKind {
+    fn default() -> Self { HintTriggerKind::Alt }
+}
+
+/// Describes a global toggle combo on Windows. The `modifiers` field is a
+/// bitmask drawn from `activation_hotkey::mods`; `vk` is a Win32 virtual key
+/// code (e.g. 0x48 for `H`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActivationHotkey {
+    #[serde(default = "default_hotkey_mods")]
+    pub modifiers: u32,
+    #[serde(default = "default_hotkey_vk")]
+    pub vk: u32,
+}
+
+/// Bitmask flags for `ActivationHotkey::modifiers`. Intentionally independent
+/// of Win32's `HOT_KEY_MODIFIERS` so the JSON remains stable across OS SDK
+/// versions.
+pub mod hotkey_mods {
+    pub const CTRL:  u32 = 1 << 0;
+    pub const ALT:   u32 = 1 << 1;
+    pub const SHIFT: u32 = 1 << 2;
+    pub const WIN:   u32 = 1 << 3;
+}
+
+fn default_hotkey_mods() -> u32 { hotkey_mods::CTRL | hotkey_mods::ALT }
+fn default_hotkey_vk() -> u32 { 0x48 } // VK_H
+
+impl Default for ActivationHotkey {
+    fn default() -> Self {
+        Self {
+            modifiers: default_hotkey_mods(),
+            vk: default_hotkey_vk(),
+        }
+    }
 }
 
 /// A user-defined mapping from a window to a reserved hint key.
@@ -61,6 +119,8 @@ impl Default for Config {
             swap_resize_mode: SwapResizeMode::default(),
             mru_glow_enabled: default_mru_glow(),
             reservations: Vec::new(),
+            activation_hotkey: ActivationHotkey::default(),
+            hint_trigger: HintTriggerKind::default(),
         }
     }
 }

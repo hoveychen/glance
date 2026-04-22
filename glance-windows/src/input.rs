@@ -1,9 +1,10 @@
 //! Global keyboard input handling for Glance Windows.
 //!
 //! Provides low-level keyboard hook support for:
-//! - Alt double-tap detection (toggle hint mode)
+//! - Hint-trigger modifier double-tap detection (user-configurable,
+//!   default Alt) → toggle hint mode
 //! - Hint mode key interception (letters, numbers, escape)
-//! - Global hotkey detection (Ctrl+Alt+H)
+//! - Global hotkey detection (user-configurable, default Ctrl+Alt+H)
 //!
 //! # Threading requirements
 //!
@@ -17,7 +18,9 @@ use std::sync::mpsc::Sender;
 /// Events emitted by the input system.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputEvent {
-    /// Alt key double-tapped (toggle hint mode).
+    /// Configured hint-trigger modifier was double-tapped (toggle hint mode).
+    /// Kept named `AltDoubleTap` for backwards source-level compatibility —
+    /// the default trigger key is still Alt.
     AltDoubleTap,
     /// A hint key was pressed while in hint mode (e.g., '1', 'A'). The second
     /// field is true when Shift was held at the time of the press — used to
@@ -28,7 +31,7 @@ pub enum InputEvent {
     HintBackspacePressed,
     /// Escape pressed while in hint mode (cancel).
     EscapePressed,
-    /// Global hotkey triggered (Ctrl+Alt+H).
+    /// Global hotkey triggered (user-configured combo, default Ctrl+Alt+H).
     ToggleHotkey,
 }
 
@@ -43,9 +46,11 @@ mod platform {
     use std::time::Instant;
     use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VIRTUAL_KEY, VK_A, VK_BACK, VK_ESCAPE, VK_H, VK_LCONTROL, VK_LMENU,
-        VK_LSHIFT, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_Z, VK_0, VK_9,
+        GetAsyncKeyState, VIRTUAL_KEY, VK_A, VK_BACK, VK_ESCAPE, VK_LCONTROL, VK_LMENU,
+        VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_Z, VK_0, VK_9,
     };
+
+    use crate::config::{self, hotkey_mods, HintTriggerKind};
     use windows::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT,
         WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
@@ -67,23 +72,36 @@ mod platform {
     struct HookState {
         sender: Sender<InputEvent>,
         hint_mode: bool,
-        /// Timestamp of the last "clean" Alt press (no other key mixed in).
-        last_alt_press: Option<Instant>,
-        /// Timestamp of the last "clean" Alt release (tap completed).
-        last_alt_tap: Option<Instant>,
-        /// Whether any non-Alt key was pressed while Alt was held down.
-        alt_contaminated: bool,
-        /// Whether Alt is currently held down.
-        alt_down: bool,
+        /// Timestamp of the last "clean" trigger-key press (no other key mixed
+        /// in). The trigger key is user-configurable via `config.hint_trigger`.
+        last_trigger_press: Option<Instant>,
+        /// Timestamp of the last "clean" trigger-key release (tap completed).
+        last_trigger_tap: Option<Instant>,
+        /// Whether any non-trigger key was pressed while the trigger was held.
+        trigger_contaminated: bool,
+        /// Whether the trigger key is currently held down.
+        trigger_down: bool,
     }
 
     static HOOK_STATE: Mutex<Option<HookState>> = Mutex::new(None);
     static HOOK_HANDLE: Mutex<Option<SendHhook>> = Mutex::new(None);
 
-    /// Maximum duration of an Alt press-release to count as a "tap".
-    const ALT_TAP_MAX_MS: u128 = 200;
+    /// Maximum duration of a trigger-key press-release to count as a "tap".
+    const TRIGGER_TAP_MAX_MS: u128 = 200;
     /// Maximum gap between two taps to count as a "double-tap".
-    const ALT_DOUBLE_TAP_MAX_MS: u128 = 400;
+    const TRIGGER_DOUBLE_TAP_MAX_MS: u128 = 400;
+
+    /// Returns the (left VK, right VK) pair for the configured trigger kind.
+    /// Shift and Ctrl expose both halves; Alt's are VK_LMENU / VK_RMENU;
+    /// Win's are VK_LWIN / VK_RWIN.
+    fn trigger_vks(kind: HintTriggerKind) -> (u32, u32) {
+        match kind {
+            HintTriggerKind::Alt   => (VK_LMENU.0   as u32, VK_RMENU.0    as u32),
+            HintTriggerKind::Ctrl  => (VK_LCONTROL.0 as u32, VK_RCONTROL.0 as u32),
+            HintTriggerKind::Shift => (VK_LSHIFT.0   as u32, VK_RSHIFT.0   as u32),
+            HintTriggerKind::Win   => (VK_LWIN.0     as u32, VK_RWIN.0     as u32),
+        }
+    }
 
     pub struct InputManager;
 
@@ -93,10 +111,10 @@ mod platform {
             *state = Some(HookState {
                 sender,
                 hint_mode: false,
-                last_alt_press: None,
-                last_alt_tap: None,
-                alt_contaminated: false,
-                alt_down: false,
+                last_trigger_press: None,
+                last_trigger_tap: None,
+                trigger_contaminated: false,
+                trigger_down: false,
             });
             InputManager
         }
@@ -176,6 +194,28 @@ mod platform {
         }
     }
 
+    /// Returns true when the currently pressed modifier keys exactly match
+    /// the bitmask configured by the user. Each required flag must be held;
+    /// any extra modifier disqualifies the match so e.g. a Ctrl+Alt+Shift+H
+    /// combo doesn't accidentally fire a Ctrl+Alt+H hotkey.
+    fn modifiers_match(required: u32) -> bool {
+        let ctrl  = is_key_down(VK_LCONTROL) || is_key_down(VK_RCONTROL);
+        let alt   = is_key_down(VK_LMENU) || is_key_down(VK_RMENU);
+        let shift = is_key_down(VK_LSHIFT) || is_key_down(VK_RSHIFT);
+        let win   = is_key_down(VK_LWIN) || is_key_down(VK_RWIN);
+
+        let needs_ctrl  = (required & hotkey_mods::CTRL)  != 0;
+        let needs_alt   = (required & hotkey_mods::ALT)   != 0;
+        let needs_shift = (required & hotkey_mods::SHIFT) != 0;
+        let needs_win   = (required & hotkey_mods::WIN)   != 0;
+
+        ctrl == needs_ctrl
+            && alt == needs_alt
+            && shift == needs_shift
+            && win == needs_win
+            && (needs_ctrl || needs_alt || needs_shift || needs_win)
+    }
+
     /// Low-level keyboard hook callback.
     ///
     /// # Safety
@@ -209,59 +249,63 @@ mod platform {
             None => return CallNextHookEx(None, code, wparam, lparam),
         };
 
-        let is_left_alt = vk == VK_LMENU.0 as u32;
-        let is_right_alt = vk == VK_RMENU.0 as u32;
-        let is_any_alt = is_left_alt || is_right_alt;
+        // Resolve the configured hint trigger key. Re-reading config on every
+        // event is cheap (in-memory clone) and makes tray menu changes apply
+        // immediately without restarting the input thread.
+        let trigger_kind = config::load().hint_trigger;
+        let (trigger_lvk, trigger_rvk) = trigger_vks(trigger_kind);
+        let is_trigger = vk == trigger_lvk || vk == trigger_rvk;
 
-        // --- Alt double-tap detection ---
-        if is_any_alt {
-            if is_keydown && !state.alt_down {
-                state.alt_down = true;
-                state.alt_contaminated = false;
-                state.last_alt_press = Some(Instant::now());
-            } else if is_keyup && state.alt_down {
-                state.alt_down = false;
+        // --- Trigger-key double-tap detection ---
+        if is_trigger {
+            if is_keydown && !state.trigger_down {
+                state.trigger_down = true;
+                state.trigger_contaminated = false;
+                state.last_trigger_press = Some(Instant::now());
+            } else if is_keyup && state.trigger_down {
+                state.trigger_down = false;
                 let now = Instant::now();
 
                 // Was it a clean tap (pressed and released quickly, no other
                 // key mixed in)?
-                let is_clean_tap = !state.alt_contaminated
+                let is_clean_tap = !state.trigger_contaminated
                     && state
-                        .last_alt_press
-                        .map(|t| now.duration_since(t).as_millis() <= ALT_TAP_MAX_MS)
+                        .last_trigger_press
+                        .map(|t| now.duration_since(t).as_millis() <= TRIGGER_TAP_MAX_MS)
                         .unwrap_or(false);
 
                 if is_clean_tap {
                     // Check for double-tap: was there a previous tap within
                     // the double-tap window?
                     let is_double_tap = state
-                        .last_alt_tap
-                        .map(|t| now.duration_since(t).as_millis() <= ALT_DOUBLE_TAP_MAX_MS)
+                        .last_trigger_tap
+                        .map(|t| now.duration_since(t).as_millis() <= TRIGGER_DOUBLE_TAP_MAX_MS)
                         .unwrap_or(false);
 
                     if is_double_tap {
                         send_event(state, InputEvent::AltDoubleTap);
-                        state.last_alt_tap = None; // Reset so triple-tap doesn't re-trigger.
+                        state.last_trigger_tap = None; // Reset so triple-tap doesn't re-trigger.
                     } else {
-                        state.last_alt_tap = Some(now);
+                        state.last_trigger_tap = Some(now);
                     }
                 } else {
                     // Not a clean tap — reset.
-                    state.last_alt_tap = None;
+                    state.last_trigger_tap = None;
                 }
 
-                state.last_alt_press = None;
+                state.last_trigger_press = None;
             }
 
-            // Always pass Alt through — we never consume the Alt key itself.
-            // Drop the lock before calling CallNextHookEx.
+            // Always pass the trigger key through — we never consume the
+            // modifier itself. Drop the lock before calling CallNextHookEx.
             drop(guard);
             return CallNextHookEx(None, code, wparam, lparam);
         }
 
-        // Any non-Alt key while Alt is held contaminates the current Alt press.
-        if state.alt_down {
-            state.alt_contaminated = true;
+        // Any non-trigger key while the trigger is held contaminates the
+        // current press so a composite gesture (e.g. Alt+Tab) doesn't fire.
+        if state.trigger_down {
+            state.trigger_contaminated = true;
         }
 
         // --- Only process key-down events for the rest ---
@@ -270,11 +314,12 @@ mod platform {
             return CallNextHookEx(None, code, wparam, lparam);
         }
 
-        // --- Global hotkey: Ctrl+Alt+H ---
-        let ctrl_down = is_key_down(VK_LCONTROL) || is_key_down(VK_RCONTROL);
-        let alt_down = is_key_down(VK_LMENU) || is_key_down(VK_RMENU);
-
-        if vk == VK_H.0 as u32 && ctrl_down && alt_down {
+        // --- Global hotkey: user-configured combo (default Ctrl+Alt+H) ---
+        // Re-reading from the cached config on every keydown is cheap
+        // (in-memory clone) and means hotkey edits take effect live, without
+        // requiring an input-thread restart.
+        let hk = config::load().activation_hotkey;
+        if vk == hk.vk && modifiers_match(hk.modifiers) {
             send_event(state, InputEvent::ToggleHotkey);
             drop(guard);
             // Consume the key so it doesn't reach other apps.

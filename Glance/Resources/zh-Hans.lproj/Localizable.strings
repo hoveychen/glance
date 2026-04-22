@@ -3,6 +3,7 @@
 "settings.window.titleWithPanel"   = "设置 — %@";
 "settings.panel.general"           = "通用";
 "settings.panel.window"            = "窗口";
+"settings.panel.shortcut"          = "快捷键";
 
 /* General panel */
 "settings.general.startup.header"         = "启动";
@@ -39,10 +40,25 @@
 "settings.window.mruGlow.toggle" = "高亮最近使用的缩略图";
 "settings.window.mruGlow.hint"   = "在最近点击、拖动或钉住的 3 张缩略图周围添加黄色光晕。最新的最亮，越旧越暗。在窗口较多时帮助快速定位刚才正在处理的窗口。";
 
+/* Shortcut panel */
+"settings.shortcut.hintTrigger.header"  = "提示触发键";
+"settings.shortcut.hintTrigger.explain" = "Glance 激活后，单独轻按这个修饰键即可在每个缩略图上闪出提示字母，一键切换到目标窗口。";
+"hintTrigger.option"  = "Option (⌥)";
+"hintTrigger.command" = "Command (⌘)";
+"hintTrigger.control" = "Control (⌃)";
+"hintTrigger.shift"   = "Shift (⇧)";
+"settings.shortcut.activation.header"  = "激活快捷键";
+"settings.shortcut.activation.explain" = "这个组合键可以在任意位置唤起或关闭 Glance 工作区。点击右边的输入框，然后按下你想要的新组合键。";
+"settings.shortcut.activation.reset"   = "恢复默认";
+"settings.shortcut.activation.hint"    = "组合键必须至少包含 ⌃ ⌥ ⇧ ⌘ 中的一个修饰键。单独的按键会被拒绝，以免在输入时误触发。";
+"settings.shortcut.recording"          = "请按下快捷键…（Esc 取消）";
+"settings.shortcut.tips.header"        = "快捷键玩法";
+"settings.shortcut.tips.bodyFormat"    = "• 按下激活快捷键进入 Glance，再按一次退出并恢复所有窗口。\n• 激活后，单独轻按 %@ 即可在每个缩略图上闪出提示字母——按下字母把对应窗口交换到工作区。\n• 提示模式中先按 # 切换到 Pin 模式，接下来按下的字母会把对应窗口钉为侧边参考。\n• Shift+点击提示气泡（或按 Shift+字母）可以重命名提示键。改过的字母会固化为该窗口的专属键，之后盲按就能直达。\n• 拖动缩略图到工作区左右边缘可以钉为参考窗口；拖动已钉窗口的 × 标签可以取消钉住。";
+
 /* Main menu + status bar menu */
 "menu.aboutGlanceFormat"  = "关于 Glance %1$@（%2$@）";
-"menu.toggleGlance.full"  = "切换 Glance  \U2303\U2325H";
-"menu.toggleGlance.short" = "切换（\U2303\U2325H）";
+"menu.toggleGlance.fullFormat"  = "切换 Glance  %@";
+"menu.toggleGlance.shortFormat" = "切换（%@）";
 "menu.showGuide"          = "显示引导";
 "menu.checkForUpdates"    = "检查更新…";
 "menu.settings"           = "设置…";

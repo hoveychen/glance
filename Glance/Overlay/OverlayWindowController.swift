@@ -160,8 +160,8 @@ final class OverlayWindowController {
     }
 
     /// Switch a single thumbnail's pill into editing mode, optionally keeping
-    /// the currently displayed character. Used when the user Shift+<key>s or
-    /// clicks a pill to rename it.
+    /// the currently displayed character. Used when the user clicks a pill to
+    /// rename its reservation.
     func setHintEditing(windowID: CGWindowID, character: String) {
         guard let window = thumbnailWindows[windowID] else { return }
         window.showHint(character, style: .editing)

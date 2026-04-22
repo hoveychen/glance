@@ -3,6 +3,7 @@
 "settings.window.titleWithPanel"   = "Settings — %@";
 "settings.panel.general"           = "General";
 "settings.panel.window"            = "Window";
+"settings.panel.shortcut"          = "Shortcut";
 
 /* General panel */
 "settings.general.startup.header"         = "Startup";
@@ -39,10 +40,25 @@
 "settings.window.mruGlow.toggle" = "Highlight recently used thumbnails";
 "settings.window.mruGlow.hint"   = "Adds a yellow halo around the 3 most recently clicked, dragged, or pinned thumbnails. The newest glows brightest; older ones dim. Helps locate what you were just working on when many windows are open.";
 
+/* Shortcut panel */
+"settings.shortcut.hintTrigger.header"  = "Hint Trigger Key";
+"settings.shortcut.hintTrigger.explain" = "When Glance is active, tap this modifier key (briefly, by itself) to flash hint letters on every thumbnail and pick a window with one keystroke.";
+"hintTrigger.option"  = "Option (⌥)";
+"hintTrigger.command" = "Command (⌘)";
+"hintTrigger.control" = "Control (⌃)";
+"hintTrigger.shift"   = "Shift (⇧)";
+"settings.shortcut.activation.header"  = "Activation Hotkey";
+"settings.shortcut.activation.explain" = "This key combination toggles the Glance work area on and off from anywhere on your Mac. Click the field and press the new combination you want.";
+"settings.shortcut.activation.reset"   = "Reset to Default";
+"settings.shortcut.activation.hint"    = "At least one of ⌃ ⌥ ⇧ ⌘ must be part of the combo. Bare keys are rejected so Glance won't trigger while you type.";
+"settings.shortcut.recording"          = "Press shortcut… (Esc to cancel)";
+"settings.shortcut.tips.header"        = "How to Use the Hotkey";
+"settings.shortcut.tips.bodyFormat"    = "• Press your activation hotkey to enter Glance. Press it again to exit and restore every window.\n• Once active, tap %@ by itself to flash hint letters on each thumbnail — hit a letter to swap that window into the work area.\n• In hint mode, press # first to switch to Pin mode: the next hint letter pins that window as a side reference.\n• Shift-click a hint pill (or press Shift+letter) to rename it. Typed letters become permanent reservations, so the same key always reaches the same window.\n• Drag a thumbnail onto the left / right edge of the work area to pin it. Drag a pinned window's × badge to unpin.";
+
 /* Main menu + status bar menu */
 "menu.aboutGlanceFormat"  = "About Glance %1$@ (%2$@)";
-"menu.toggleGlance.full"  = "Toggle Glance  \U2303\U2325H";
-"menu.toggleGlance.short" = "Toggle (\U2303\U2325H)";
+"menu.toggleGlance.fullFormat"  = "Toggle Glance  %@";
+"menu.toggleGlance.shortFormat" = "Toggle (%@)";
 "menu.showGuide"          = "Show Guide";
 "menu.checkForUpdates"    = "Check for Updates…";
 "menu.settings"           = "Settings…";

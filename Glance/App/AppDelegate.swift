@@ -3,6 +3,23 @@ import os.log
 
 private let logger = Logger(subsystem: "com.hoveychen.Glance", category: "App")
 
+extension NSUserInterfaceItemIdentifier {
+    static let glanceToggleMain   = NSUserInterfaceItemIdentifier("glance.toggle.main")
+    static let glanceToggleStatus = NSUserInterfaceItemIdentifier("glance.toggle.status")
+}
+
+private extension NSMenu {
+    /// Walks this menu (and its submenus) and returns the first item whose
+    /// identifier matches. Menus are small so a linear walk is fine.
+    func findItem(with id: NSUserInterfaceItemIdentifier) -> NSMenuItem? {
+        for item in items {
+            if item.identifier == id { return item }
+            if let hit = item.submenu?.findItem(with: id) { return hit }
+        }
+        return nil
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem!
@@ -154,7 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupEventMonitors() {
         if let t = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
-            if event.modifierFlags.contains([.control, .option]) && event.keyCode == 4 {
+            if Settings.shared.activationHotkey.matches(event) {
                 self?.toggleActive()
             }
             if self?.optionDownTimestamp != 0 {
@@ -164,7 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             eventMonitorTokens.append(t)
         }
         if let t = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
-            if event.modifierFlags.contains([.control, .option]) && event.keyCode == 4 {
+            if Settings.shared.activationHotkey.matches(event) {
                 self?.toggleActive()
                 return nil
             }
@@ -228,6 +245,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyDockIconPreference()
         // MRU glow toggle flip should re-render without waiting for next refresh.
         refreshMRUHighlights()
+        refreshToggleMenuTitles()
+    }
+
+    /// Updates the shortcut-hint glyphs shown next to "Toggle Glance" in the
+    /// main menu and status-bar menu so they reflect the user's current
+    /// activation hotkey. Safe to call before the menus are built.
+    private func refreshToggleMenuTitles() {
+        let shortcut = Settings.shared.activationHotkey.displayString
+        if let item = NSApp.mainMenu?.findItem(with: .glanceToggleMain) {
+            item.title = GlanceMenuStrings.toggleFull(shortcut: shortcut)
+        }
+        if let item = statusItem?.menu?.findItem(with: .glanceToggleStatus) {
+            item.title = GlanceMenuStrings.toggleShort(shortcut: shortcut)
+        }
     }
 
     // MARK: - Main Menu Bar
@@ -258,11 +289,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ))
         appMenu.addItem(NSMenuItem.separator())
 
-        appMenu.addItem(NSMenuItem(
-            title: GlanceMenuStrings.toggleFull,
+        let toggleItem = NSMenuItem(
+            title: GlanceMenuStrings.toggleFull(shortcut: Settings.shared.activationHotkey.displayString),
             action: #selector(toggleActive),
             keyEquivalent: ""
-        ))
+        )
+        toggleItem.identifier = .glanceToggleMain
+        appMenu.addItem(toggleItem)
         appMenu.addItem(NSMenuItem(
             title: GlanceMenuStrings.showGuide,
             action: #selector(showGuideAgain),
@@ -340,7 +373,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: aboutTitle, action: #selector(showAbout), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: GlanceMenuStrings.toggleShort, action: #selector(toggleActive), keyEquivalent: ""))
+        let toggleShortItem = NSMenuItem(
+            title: GlanceMenuStrings.toggleShort(shortcut: Settings.shared.activationHotkey.displayString),
+            action: #selector(toggleActive),
+            keyEquivalent: ""
+        )
+        toggleShortItem.identifier = .glanceToggleStatus
+        menu.addItem(toggleShortItem)
         menu.addItem(NSMenuItem(title: GlanceMenuStrings.showGuide, action: #selector(showGuideAgain), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: GlanceMenuStrings.checkForUpdates, action: #selector(checkForUpdates), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
@@ -1475,24 +1514,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Option Short-Press Detection
 
     private func handleFlagsChanged(_ event: NSEvent) {
-        let optionPressed = event.modifierFlags.contains(.option)
-        let otherModifiers = event.modifierFlags.intersection([.control, .command, .shift])
+        let all: NSEvent.ModifierFlags = [.control, .option, .shift, .command]
+        let triggerFlag = Settings.shared.hintTriggerKey.modifierFlag
+        let triggerPressed = event.modifierFlags.contains(triggerFlag)
+        let otherModifiers = event.modifierFlags.intersection(all.subtracting(triggerFlag))
 
-        if optionPressed && otherModifiers.isEmpty {
-            // Option just pressed (alone)
+        if triggerPressed && otherModifiers.isEmpty {
+            // Trigger key just pressed (alone)
             if optionDownTimestamp == 0 {
                 optionDownTimestamp = event.timestamp
                 optionWasCombined = false
             }
-        } else if !optionPressed && optionDownTimestamp != 0 {
-            // Option just released
+        } else if !triggerPressed && optionDownTimestamp != 0 {
+            // Trigger key just released
             let duration = event.timestamp - optionDownTimestamp
             optionDownTimestamp = 0
             if !optionWasCombined && duration < 0.3 && isActive {
                 toggleHintMode()
             }
         } else {
-            // Other modifier pressed while Option held → combined
+            // Other modifier pressed while trigger held → combined
             if optionDownTimestamp != 0 {
                 optionWasCombined = true
             }
@@ -1626,19 +1667,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let key = String(chars.prefix(1))
-        let shiftHeld = event.modifierFlags.contains(.shift)
-
-        // Shift+<key> → enter edit mode for the window currently showing that
-        // key. The user names (not locks) the key: the next typed letter
-        // replaces the current assignment. Any shift-held press that doesn't
-        // resolve to a mapped key is swallowed rather than exiting hint mode,
-        // so pressing e.g. Shift+1 (which yields "!") doesn't surprise-quit.
-        if shiftHeld {
-            if let windowID = hintMapping[key] {
-                enterHintEditMode(windowID: windowID, currentKey: key)
-            }
-            return
-        }
 
         // '#' toggles pin sub-mode: next key press pins instead of swapping
         if key == "#" && !isHintPinMode {

@@ -6,10 +6,11 @@
 
 use std::sync::mpsc::Sender;
 
+use crate::config::{hotkey_mods, ActivationHotkey, HintTriggerKind};
 use crate::swap_resize::SwapResizeMode;
 
 /// Actions that can be triggered from the system tray.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayAction {
     /// Toggle Glance on/off.
     Toggle,
@@ -17,8 +18,53 @@ pub enum TrayAction {
     SetSwapResizeMode(SwapResizeMode),
     /// Enable / disable the recency glow on thumbnails.
     SetMruGlowEnabled(bool),
+    /// Replace the global activation hotkey.
+    SetActivationHotkey(ActivationHotkey),
+    /// Change which modifier key's double-tap opens hint mode.
+    SetHintTrigger(HintTriggerKind),
     /// Exit the application.
     Quit,
+}
+
+/// A named activation-hotkey combo shown in the tray submenu. Keeping the
+/// set small and hand-picked gives users a one-click UI without having to
+/// hand-edit config.json; the JSON escape hatch remains for power users.
+struct HotkeyPreset {
+    /// English label shown in the menu (modifier combos are universal).
+    label: &'static str,
+    hotkey: ActivationHotkey,
+}
+
+/// Returns the hard-coded list of hotkey presets offered in the tray menu.
+/// The first entry is treated as the "default" for reset purposes and must
+/// match `ActivationHotkey::default()`.
+fn hotkey_presets() -> [HotkeyPreset; 6] {
+    [
+        HotkeyPreset {
+            label: "Ctrl+Alt+H (Default)",
+            hotkey: ActivationHotkey { modifiers: hotkey_mods::CTRL | hotkey_mods::ALT, vk: 0x48 },
+        },
+        HotkeyPreset {
+            label: "Ctrl+Shift+H",
+            hotkey: ActivationHotkey { modifiers: hotkey_mods::CTRL | hotkey_mods::SHIFT, vk: 0x48 },
+        },
+        HotkeyPreset {
+            label: "Ctrl+Alt+G",
+            hotkey: ActivationHotkey { modifiers: hotkey_mods::CTRL | hotkey_mods::ALT, vk: 0x47 },
+        },
+        HotkeyPreset {
+            label: "Ctrl+Alt+Space",
+            hotkey: ActivationHotkey { modifiers: hotkey_mods::CTRL | hotkey_mods::ALT, vk: 0x20 },
+        },
+        HotkeyPreset {
+            label: "Ctrl+Shift+Space",
+            hotkey: ActivationHotkey { modifiers: hotkey_mods::CTRL | hotkey_mods::SHIFT, vk: 0x20 },
+        },
+        HotkeyPreset {
+            label: "Win+Alt+H",
+            hotkey: ActivationHotkey { modifiers: hotkey_mods::WIN | hotkey_mods::ALT, vk: 0x48 },
+        },
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -27,7 +73,7 @@ pub enum TrayAction {
 
 #[cfg(windows)]
 mod platform {
-    use super::{Sender, SwapResizeMode, TrayAction};
+    use super::{hotkey_presets, HintTriggerKind, Sender, SwapResizeMode, TrayAction};
     use std::cell::RefCell;
     use std::mem;
 
@@ -55,6 +101,19 @@ mod platform {
     const IDM_RESIZE_PRESERVE: usize = 1010;
     const IDM_RESIZE_CLAMP: usize = 1011;
     const IDM_MRU_GLOW_TOGGLE: usize = 1020;
+    /// Base for hotkey preset items. Offset = preset index in `hotkey_presets()`.
+    const IDM_HOTKEY_BASE: usize = 1030;
+    /// Base IDs for the hint-trigger submenu entries. Offsets 0..4 correspond
+    /// to Alt / Ctrl / Shift / Win.
+    const IDM_HINT_TRIGGER_BASE: usize = 1040;
+
+    /// The four hint-trigger kinds, in display order.
+    const HINT_TRIGGERS: [HintTriggerKind; 4] = [
+        HintTriggerKind::Alt,
+        HintTriggerKind::Ctrl,
+        HintTriggerKind::Shift,
+        HintTriggerKind::Win,
+    ];
 
     /// Tray icon UID (arbitrary, unique within the process).
     const TRAY_UID: u32 = 1;
@@ -136,7 +195,22 @@ mod platform {
                         let current = crate::config::load().mru_glow_enabled;
                         send_action(TrayAction::SetMruGlowEnabled(!current));
                     }
-                    _ => {}
+                    other => {
+                        let presets = hotkey_presets();
+                        if other >= IDM_HOTKEY_BASE
+                            && other < IDM_HOTKEY_BASE + presets.len()
+                        {
+                            let idx = other - IDM_HOTKEY_BASE;
+                            send_action(TrayAction::SetActivationHotkey(
+                                presets[idx].hotkey.clone(),
+                            ));
+                        } else if other >= IDM_HINT_TRIGGER_BASE
+                            && other < IDM_HINT_TRIGGER_BASE + HINT_TRIGGERS.len()
+                        {
+                            let idx = other - IDM_HINT_TRIGGER_BASE;
+                            send_action(TrayAction::SetHintTrigger(HINT_TRIGGERS[idx]));
+                        }
+                    }
                 }
                 LRESULT(0)
             }
@@ -208,6 +282,83 @@ mod platform {
             MF_POPUP,
             resize_submenu.0 as usize,
             windows::core::PCWSTR(resize_title.as_ptr()),
+        );
+
+        // "Hotkey" submenu — preset combos the user can pick with one click.
+        let hotkey_submenu = match CreatePopupMenu() {
+            Ok(m) => m,
+            Err(_) => {
+                let _ = DestroyMenu(hmenu);
+                return;
+            }
+        };
+        let current_hotkey = crate::config::load().activation_hotkey;
+        let presets = hotkey_presets();
+        // Keep label buffers alive until TrackPopupMenu returns — PCWSTR holds
+        // a raw pointer into the buffer and Windows reads the text lazily.
+        let mut hotkey_label_buffers: Vec<Vec<u16>> = Vec::with_capacity(presets.len());
+        for preset in presets.iter() {
+            let buf: Vec<u16> = format!("{}\0", preset.label).encode_utf16().collect();
+            hotkey_label_buffers.push(buf);
+        }
+        for (idx, preset) in presets.iter().enumerate() {
+            let flag = if preset.hotkey == current_hotkey { MF_CHECKED } else { MF_UNCHECKED };
+            let _ = AppendMenuW(
+                hotkey_submenu,
+                MF_STRING | flag,
+                IDM_HOTKEY_BASE + idx,
+                windows::core::PCWSTR(hotkey_label_buffers[idx].as_ptr()),
+            );
+        }
+        let hotkey_title: Vec<u16> = format!("{}\0", crate::strings::t("tray.hotkey"))
+            .encode_utf16()
+            .collect();
+        let _ = AppendMenuW(
+            hmenu,
+            MF_POPUP,
+            hotkey_submenu.0 as usize,
+            windows::core::PCWSTR(hotkey_title.as_ptr()),
+        );
+
+        // "Hint Trigger" submenu — which modifier key's double-tap opens hint
+        // mode. Applies only while Glance is active. Win is offered but will
+        // clash with the Windows Start menu.
+        let hint_trigger_submenu = match CreatePopupMenu() {
+            Ok(m) => m,
+            Err(_) => {
+                let _ = DestroyMenu(hmenu);
+                return;
+            }
+        };
+        let current_trigger = crate::config::load().hint_trigger;
+        let trigger_keys = [
+            "tray.hint_trigger.alt",
+            "tray.hint_trigger.ctrl",
+            "tray.hint_trigger.shift",
+            "tray.hint_trigger.win",
+        ];
+        let mut trigger_label_buffers: Vec<Vec<u16>> = Vec::with_capacity(HINT_TRIGGERS.len());
+        for key in trigger_keys.iter() {
+            let buf: Vec<u16> = format!("{}\0", crate::strings::t(key)).encode_utf16().collect();
+            trigger_label_buffers.push(buf);
+        }
+        for (idx, kind) in HINT_TRIGGERS.iter().enumerate() {
+            let flag = if *kind == current_trigger { MF_CHECKED } else { MF_UNCHECKED };
+            let _ = AppendMenuW(
+                hint_trigger_submenu,
+                MF_STRING | flag,
+                IDM_HINT_TRIGGER_BASE + idx,
+                windows::core::PCWSTR(trigger_label_buffers[idx].as_ptr()),
+            );
+        }
+        let hint_trigger_title: Vec<u16> = format!("{}\0", crate::strings::t("tray.hint_trigger"))
+            .encode_utf16()
+            .collect();
+        let _ = AppendMenuW(
+            hmenu,
+            MF_POPUP,
+            hint_trigger_submenu.0 as usize,
+            windows::core::PCWSTR(hint_trigger_title.as_ptr()),
         );
 
         // "Highlight recent thumbnails" checkbox

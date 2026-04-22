@@ -11,18 +11,21 @@ enum GlanceMenuStrings {
                           comment: "About menu item; first %@ is version, second is build number")
     }
 
-    /// Main-menu form with the full ⌃⌥H hint glyphs appended.
-    static var toggleFull: String {
-        NSLocalizedString("menu.toggleGlance.full",
-                          value: "Toggle Glance  \u{2303}\u{2325}H",
-                          comment: "Main menu: toggle Glance; trailing glyphs are the ⌃⌥H shortcut hint")
+    /// Main-menu form with the user's current hotkey glyphs appended.
+    /// `shortcut` is a pre-formatted glyph string like "⌃⌥H".
+    static func toggleFull(shortcut: String) -> String {
+        let fmt = NSLocalizedString("menu.toggleGlance.fullFormat",
+                                    value: "Toggle Glance  %@",
+                                    comment: "Main menu: toggle Glance; %@ is the user's configured shortcut glyphs")
+        return String(format: fmt, shortcut)
     }
 
-    /// Status-bar form: shorter `Toggle (⌃⌥H)`.
-    static var toggleShort: String {
-        NSLocalizedString("menu.toggleGlance.short",
-                          value: "Toggle (\u{2303}\u{2325}H)",
-                          comment: "Status bar menu: toggle Glance with shortcut hint")
+    /// Status-bar form: shorter `Toggle (⌃⌥H)` with the current hotkey.
+    static func toggleShort(shortcut: String) -> String {
+        let fmt = NSLocalizedString("menu.toggleGlance.shortFormat",
+                                    value: "Toggle (%@)",
+                                    comment: "Status bar menu: toggle Glance; %@ is the user's configured shortcut glyphs")
+        return String(format: fmt, shortcut)
     }
 
     static var showGuide: String {
