@@ -52,7 +52,12 @@ final class ThumbnailWindow: NSWindow {
         self.level = .floating
         self.backgroundColor = .clear
         self.isOpaque = false
-        self.hasShadow = true
+        // NSWindow's automatic drop shadow is computed from the window's
+        // composited alpha — it wraps around CALayer shadow falloff too,
+        // which produced a grey ring outside the MRU recency glow.
+        // ThumbnailView draws its own shadow under the image layer, so we
+        // opt out of the native one entirely.
+        self.hasShadow = false
         self.ignoresMouseEvents = false
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         self.isReleasedWhenClosed = false

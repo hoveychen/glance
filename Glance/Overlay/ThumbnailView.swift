@@ -30,6 +30,7 @@ final class ThumbnailView: NSView {
     var onPinRightClicked: (() -> Void)?
 
     private let mruGlowLayer = CALayer()
+    private let imageShadowLayer = CALayer()
     private let imageLayer = CALayer()
     private let iconLayer = CALayer()
     private let labelLayer = CATextLayer()
@@ -78,10 +79,7 @@ final class ThumbnailView: NSView {
 
         // MRU recency halo — sits BEHIND imageLayer, sized/shaped to match it
         // exactly so the yellow fill is fully covered; the glow shows purely
-        // as an outward shadow. Matching the image silhouette keeps the
-        // NSWindow native drop-shadow from wrapping around an oversized
-        // yellow rect (which previously produced a visible dark ring).
-        // Alpha modulated by rank via updateMRUGlow(rank:).
+        // as an outward shadow. Alpha modulated by rank via updateMRUGlow(rank:).
         mruGlowLayer.backgroundColor = NSColor.systemYellow.cgColor
         mruGlowLayer.cornerRadius = 8
         mruGlowLayer.shadowColor = NSColor.systemYellow.cgColor
@@ -92,14 +90,22 @@ final class ThumbnailView: NSView {
         mruGlowLayer.opacity = 0
         layer?.addSublayer(mruGlowLayer)
 
+        // Custom drop shadow for the thumbnail image. NSWindow.hasShadow is
+        // disabled on ThumbnailWindow to prevent the native shadow from
+        // wrapping around the MRU glow's falloff (grey ring bug), so we
+        // render our own shadow here via shadowPath. Hidden when the MRU
+        // glow is lit, otherwise the black shadow muddies the yellow halo.
+        imageShadowLayer.backgroundColor = NSColor.clear.cgColor
+        imageShadowLayer.shadowColor = NSColor.black.cgColor
+        imageShadowLayer.shadowOpacity = 0.4
+        imageShadowLayer.shadowRadius = 4
+        imageShadowLayer.shadowOffset = CGSize(width: 0, height: -2)
+        layer?.addSublayer(imageShadowLayer)
+
         // Thumbnail image
         imageLayer.contentsGravity = .resizeAspect
         imageLayer.cornerRadius = 8
         imageLayer.masksToBounds = true
-        imageLayer.shadowColor = NSColor.black.cgColor
-        imageLayer.shadowOpacity = 0.4
-        imageLayer.shadowRadius = 4
-        imageLayer.shadowOffset = CGSize(width: 0, height: -2)
         layer?.addSublayer(imageLayer)
 
         // App icon
@@ -253,6 +259,13 @@ final class ThumbnailView: NSView {
         imageLayer.frame = imageRect
 
         mruGlowLayer.frame = imageRect
+
+        imageShadowLayer.frame = imageRect
+        imageShadowLayer.shadowPath = CGPath(
+            roundedRect: CGRect(origin: .zero, size: imageRect.size),
+            cornerWidth: 8, cornerHeight: 8,
+            transform: nil
+        )
 
         // Icon + label above the image, left-aligned
         let iconSize: CGFloat = 28
@@ -424,6 +437,9 @@ final class ThumbnailView: NSView {
         CATransaction.setAnimationDuration(0.2)
         mruGlowLayer.opacity = alpha
         mruGlowLayer.isHidden = (alpha == 0)
+        // Hide the black drop shadow while the yellow glow is lit — otherwise
+        // the black falloff mixes with the yellow halo into a muddy edge.
+        imageShadowLayer.shadowOpacity = (alpha == 0) ? 0.4 : 0.0
         CATransaction.commit()
     }
 
