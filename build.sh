@@ -57,10 +57,28 @@ fi
 echo "==> Packaging PKG..."
 rm -f "${PKG_NAME}"
 
+# Generate a component plist that disables two PackageKit defaults that
+# break local installs:
+#   - BundleIsRelocatable: macOS would otherwise redirect the install to
+#     the first matching bundle registered in LaunchServices (e.g. an
+#     older copy still sitting in build/Build/Products/...), silently
+#     ignoring --install-location.
+#   - BundleIsVersionChecked: MARKETING_VERSION is "0.0.0-dev", which is
+#     numerically lower than any previously installed build, so without
+#     this PackageKit would skip the component with "version X.Y.Z is
+#     already installed" and leave the old bundle in /Applications.
+PKG_STAGING=$(mktemp -d)
+cp -R "$APP_PATH" "$PKG_STAGING/"
+COMPONENT_PLIST="$PKG_STAGING/component.plist"
+pkgbuild --analyze --root "$PKG_STAGING" "$COMPONENT_PLIST"
+/usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$COMPONENT_PLIST"
+/usr/libexec/PlistBuddy -c "Set :0:BundleIsVersionChecked false" "$COMPONENT_PLIST"
+
 if [ -n "${DEVELOPER_ID_INSTALLER:-}" ]; then
   # Build unsigned, then sign with installer identity
   pkgbuild \
-    --component "$APP_PATH" \
+    --root "$PKG_STAGING" \
+    --component-plist "$COMPONENT_PLIST" \
     --install-location /Applications \
     "${PKG_NAME}.unsigned"
 
@@ -73,10 +91,13 @@ if [ -n "${DEVELOPER_ID_INSTALLER:-}" ]; then
   echo "==> PKG signed with: ${DEVELOPER_ID_INSTALLER}"
 else
   pkgbuild \
-    --component "$APP_PATH" \
+    --root "$PKG_STAGING" \
+    --component-plist "$COMPONENT_PLIST" \
     --install-location /Applications \
     "${PKG_NAME}"
 fi
+
+rm -rf "$PKG_STAGING"
 
 # Notarize
 if [ -n "${NOTARY_API_KEY:-}" ]; then
