@@ -399,6 +399,16 @@ impl GlanceApp {
             AppEvent::WorkArea(WorkAreaEvent::UnpinRightClicked) => {
                 self.unpin_reference(ReferenceSide::Right);
             }
+            AppEvent::WorkArea(WorkAreaEvent::PinLeftClicked) => {
+                if let Some(main) = self.current_main_hwnd {
+                    self.pin_as_reference(main, ReferenceSide::Left);
+                }
+            }
+            AppEvent::WorkArea(WorkAreaEvent::PinRightClicked) => {
+                if let Some(main) = self.current_main_hwnd {
+                    self.pin_as_reference(main, ReferenceSide::Right);
+                }
+            }
             AppEvent::WorkArea(WorkAreaEvent::Resized(r))
             | AppEvent::WorkArea(WorkAreaEvent::Moved(r)) => {
                 if self.is_active {
@@ -1410,6 +1420,12 @@ impl GlanceApp {
             return;
         }
 
+        // Pinning the current main demotes it: clear main + promote a successor.
+        // Detected up front because we mutate pinned_*_hwnd below, after which
+        // current_main_hwnd would still match but the layout would try to put
+        // the same hwnd into both the main slot and the reference panel.
+        let is_demoting_main = self.current_main_hwnd == Some(hwnd);
+
         // Recency glow: pinning is an interaction.
         self.push_mru(hwnd);
 
@@ -1464,8 +1480,72 @@ impl GlanceApp {
             overlay.set_pinned_reference(Some(hwnd));
         }
 
+        if is_demoting_main {
+            self.current_main_hwnd = None;
+            self.current_main_pid = None;
+            self.promote_next_main();
+        }
+
         self.refresh_layout();
         log::info!("Pinned window {:#x} as {:?} reference", hwnd, side);
+    }
+
+    /// Pick a successor for the main slot after the current main was demoted
+    /// to a reference panel. Mirrors the back-navigation order: pop
+    /// `main_window_stack` for the most recent prior main, then fall back to
+    /// any non-pinned MRU thumbnail. Leaves the main slot empty if no
+    /// candidate exists. Caller is responsible for `refresh_layout()`.
+    fn promote_next_main(&mut self) {
+        let pinned_left = self.pinned_left_hwnd;
+        let pinned_right = self.pinned_right_hwnd;
+
+        let mut candidate: Option<isize> = None;
+        while let Some(h) = self.main_window_stack.pop() {
+            if Some(h) == pinned_left || Some(h) == pinned_right {
+                continue;
+            }
+            candidate = Some(h);
+            break;
+        }
+
+        if candidate.is_none() {
+            // Fall back to any MRU window that isn't pinned. Snapshot first to
+            // avoid holding a borrow while we touch parking/parked state.
+            let mru_snapshot: Vec<isize> = self.mru_hwnds.iter().copied().collect();
+            for h in mru_snapshot {
+                if Some(h) == pinned_left || Some(h) == pinned_right {
+                    continue;
+                }
+                candidate = Some(h);
+                break;
+            }
+        }
+
+        let Some(new_main) = candidate else {
+            // No successor — leave the main slot empty and clear the active
+            // overlay marker so no thumbnail keeps the active visual.
+            if let Some(ref mut overlay) = self.overlay_manager {
+                overlay.set_active_window(None);
+            }
+            return;
+        };
+
+        // Unpark and promote.
+        self.parked_windows.remove(&new_main);
+        if let Some(ref mut parking) = self.parking_manager {
+            parking.unpark_window(new_main);
+        }
+
+        self.current_main_hwnd = Some(new_main);
+        let windows = self.window_tracker.refresh();
+        if let Some(info) = windows.iter().find(|w| w.hwnd == new_main) {
+            self.current_main_pid = Some(info.owner_pid);
+        }
+
+        self.window_manager.focus_window(new_main);
+        if let Some(ref mut overlay) = self.overlay_manager {
+            overlay.set_active_window(Some(new_main));
+        }
     }
 
     fn unpin_reference(&mut self, side: ReferenceSide) {

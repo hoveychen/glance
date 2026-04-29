@@ -14,6 +14,8 @@ pub enum WorkAreaEvent {
     SwitchClicked,
     UnpinLeftClicked,
     UnpinRightClicked,
+    PinLeftClicked,
+    PinRightClicked,
     Resized(Rect),
     Moved(Rect),
     LeftSplitRatioChanged(f64),
@@ -182,8 +184,10 @@ mod platform {
         }
     }
 
-    /// "Unpin Left" button — sits next to the Exit button, bottom-left.
-    fn unpin_left_button_rect(client: &RECT) -> RECT {
+    /// Left action button — sits next to the Exit button, bottom-left.
+    /// Renders as "Unpin L" when the left reference is active, or "Pin L"
+    /// otherwise (clicking demotes the current main into the left panel).
+    fn left_action_button_rect(client: &RECT) -> RECT {
         RECT {
             left: BUTTON_MARGIN * 2 + BUTTON_WIDTH,
             top: client.bottom - BOTTOM_BAR_HEIGHT + (BOTTOM_BAR_HEIGHT - BUTTON_HEIGHT) / 2,
@@ -194,8 +198,10 @@ mod platform {
         }
     }
 
-    /// "Unpin Right" button — sits to the left of the Switch button.
-    fn unpin_right_button_rect(client: &RECT) -> RECT {
+    /// Right action button — sits to the left of the Switch button.
+    /// Renders as "Unpin R" when the right reference is active, or "Pin R"
+    /// otherwise (clicking demotes the current main into the right panel).
+    fn right_action_button_rect(client: &RECT) -> RECT {
         RECT {
             left: client.right - BUTTON_MARGIN * 2 - BUTTON_WIDTH * 2,
             top: client.bottom - BOTTOM_BAR_HEIGHT + (BOTTOM_BAR_HEIGHT - BUTTON_HEIGHT) / 2,
@@ -440,20 +446,26 @@ mod platform {
                         return LRESULT(0);
                     }
 
-                    if (*state_ptr).left_reference_active {
-                        let unpin_rc = unpin_left_button_rect(&cr);
-                        if point_in_rect(x, y, &unpin_rc) {
-                            let _ = (*state_ptr).sender.send(WorkAreaEvent::UnpinLeftClicked);
-                            return LRESULT(0);
-                        }
+                    let left_rc = left_action_button_rect(&cr);
+                    if point_in_rect(x, y, &left_rc) {
+                        let evt = if (*state_ptr).left_reference_active {
+                            WorkAreaEvent::UnpinLeftClicked
+                        } else {
+                            WorkAreaEvent::PinLeftClicked
+                        };
+                        let _ = (*state_ptr).sender.send(evt);
+                        return LRESULT(0);
                     }
 
-                    if (*state_ptr).right_reference_active {
-                        let unpin_rc = unpin_right_button_rect(&cr);
-                        if point_in_rect(x, y, &unpin_rc) {
-                            let _ = (*state_ptr).sender.send(WorkAreaEvent::UnpinRightClicked);
-                            return LRESULT(0);
-                        }
+                    let right_rc = right_action_button_rect(&cr);
+                    if point_in_rect(x, y, &right_rc) {
+                        let evt = if (*state_ptr).right_reference_active {
+                            WorkAreaEvent::UnpinRightClicked
+                        } else {
+                            WorkAreaEvent::PinRightClicked
+                        };
+                        let _ = (*state_ptr).sender.send(evt);
+                        return LRESULT(0);
                     }
                 }
                 return DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -601,18 +613,25 @@ mod platform {
             DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
         if !state_ptr.is_null() {
-            if (*state_ptr).left_reference_active {
-                let mut rc = unpin_left_button_rect(client);
-                let mut t = wide(crate::strings::t("work_area.unpin_left"));
-                DrawTextW(hdc, &mut t, &mut rc,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            }
-            if (*state_ptr).right_reference_active {
-                let mut rc = unpin_right_button_rect(client);
-                let mut t = wide(crate::strings::t("work_area.unpin_right"));
-                DrawTextW(hdc, &mut t, &mut rc,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            }
+            let mut left_rc = left_action_button_rect(client);
+            let left_key = if (*state_ptr).left_reference_active {
+                "work_area.unpin_left"
+            } else {
+                "work_area.pin_left"
+            };
+            let mut left_text = wide(crate::strings::t(left_key));
+            DrawTextW(hdc, &mut left_text, &mut left_rc,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            let mut right_rc = right_action_button_rect(client);
+            let right_key = if (*state_ptr).right_reference_active {
+                "work_area.unpin_right"
+            } else {
+                "work_area.pin_right"
+            };
+            let mut right_text = wide(crate::strings::t(right_key));
+            DrawTextW(hdc, &mut right_text, &mut right_rc,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
 
         let mut label_rc = RECT {

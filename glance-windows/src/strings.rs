@@ -73,6 +73,8 @@ fn en(key: &str) -> &'static str {
         "work_area.switch"         => "\u{21E5} Switch (Alt)",
         "work_area.unpin_left"     => "\u{2715} Unpin L",
         "work_area.unpin_right"    => "\u{2715} Unpin R",
+        "work_area.pin_left"       => "\u{2B05} Pin L",
+        "work_area.pin_right"      => "Pin R \u{27A1}",
 
         // Thumbnail overlay
         "overlay.active"           => "Active",
@@ -108,6 +110,8 @@ fn zh_hans(key: &str) -> &'static str {
         "work_area.switch"         => "\u{21E5} 切换 (Alt)",
         "work_area.unpin_left"     => "\u{2715} 取消左固",
         "work_area.unpin_right"    => "\u{2715} 取消右固",
+        "work_area.pin_left"       => "\u{2B05} 固定到左",
+        "work_area.pin_right"      => "固定到右 \u{27A1}",
 
         // Thumbnail overlay
         "overlay.active"           => "当前",
