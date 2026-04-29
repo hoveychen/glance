@@ -8,7 +8,10 @@ final class ThumbnailView: NSView {
     }
 
     var isActiveWindow: Bool = false {
-        didSet { updateActiveOverlay() }
+        didSet {
+            updateActiveOverlay()
+            updatePinButtonVisibility(animated: oldValue != isActiveWindow)
+        }
     }
 
     enum PinnedSide { case none, left, right }
@@ -40,6 +43,8 @@ final class ThumbnailView: NSView {
     private let pinnedLabel = CATextLayer()
     private let hintLayer = CATextLayer()
     private let hintHelperLayer = CATextLayer()
+    private let hintTitleBg = CALayer()
+    private let hintTitleLayer = CATextLayer()
     private let privatePlaceholder = CALayer()
     private let privateLockLabel = CATextLayer()
     private let privateSizeLabel = CATextLayer()
@@ -204,6 +209,21 @@ final class ThumbnailView: NSView {
         hintHelperLayer.isHidden = true
         layer?.addSublayer(hintHelperLayer)
 
+        // Hint-mode title banner — only visible during hint mode. Big bold
+        // title overlaid on the top of the thumbnail image so the user can
+        // scan windows by title without squinting at the small header label.
+        hintTitleBg.backgroundColor = NSColor.black.withAlphaComponent(0.65).cgColor
+        hintTitleBg.isHidden = true
+        layer?.addSublayer(hintTitleBg)
+
+        hintTitleLayer.foregroundColor = NSColor.white.cgColor
+        hintTitleLayer.backgroundColor = NSColor.clear.cgColor
+        hintTitleLayer.alignmentMode = .center
+        hintTitleLayer.truncationMode = .middle
+        hintTitleLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        hintTitleLayer.isHidden = true
+        layer?.addSublayer(hintTitleLayer)
+
         // Private browsing placeholder
         privatePlaceholder.backgroundColor = NSColor(white: 0.12, alpha: 1.0).cgColor
         privatePlaceholder.cornerRadius = 8
@@ -313,6 +333,24 @@ final class ThumbnailView: NSView {
         let helperY = hintY - helperH - 4
         hintHelperLayer.frame = CGRect(x: helperX, y: helperY, width: helperW, height: helperH)
 
+        // Hint-mode title banner across the top of the image. Height + font
+        // scale with thumbnail size so big-screen layouts read from far away,
+        // but stay capped on huge tiles. Skip rendering when the image is too
+        // short for the banner not to swallow the pill.
+        let bannerH = max(32, min(56, imageRect.height * 0.16))
+        let bannerFont = max(16, min(26, bannerH * 0.5))
+        let bannerY = imageRect.height - bannerH
+        hintTitleBg.frame = CGRect(x: 0, y: bannerY, width: bounds.width, height: bannerH)
+        let textH = ceil(bannerFont * 1.25)
+        hintTitleLayer.fontSize = bannerFont
+        hintTitleLayer.font = NSFont.systemFont(ofSize: bannerFont, weight: .bold)
+        hintTitleLayer.frame = CGRect(
+            x: 8,
+            y: bannerY + (bannerH - textH) / 2,
+            width: bounds.width - 16,
+            height: textH
+        )
+
         // Private browsing placeholder covers image area
         privatePlaceholder.frame = imageRect
         let lockH: CGFloat = 18
@@ -331,6 +369,7 @@ final class ThumbnailView: NSView {
         pinnedLabel.contentsScale = scale
         hintLayer.contentsScale = scale
         hintHelperLayer.contentsScale = scale
+        hintTitleLayer.contentsScale = scale
         iconLayer.contentsScale = scale
         privateLockLabel.contentsScale = scale
         privateSizeLabel.contentsScale = scale
@@ -361,14 +400,7 @@ final class ThumbnailView: NSView {
             imageLayer.borderWidth = 3
             CATransaction.commit()
         }
-        // Show pin buttons on hover (not for active window)
-        if !isActiveWindow {
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.15
-                pinLeftButton.animator().alphaValue = 1
-                pinRightButton.animator().alphaValue = 1
-            }
-        }
+        updatePinButtonVisibility(animated: true)
         onHoverStart?()
     }
 
@@ -386,12 +418,26 @@ final class ThumbnailView: NSView {
             imageLayer.borderWidth = 0
         }
         CATransaction.commit()
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.15
-            pinLeftButton.animator().alphaValue = 0
-            pinRightButton.animator().alphaValue = 0
-        }
+        updatePinButtonVisibility(animated: true)
         onHoverEnd?()
+    }
+
+    /// Pin buttons stay visible whenever the cursor is inside the thumbnail
+    /// OR the thumbnail represents the active main window — the latter so
+    /// the user can demote the active window into a left/right reference
+    /// without leaving discovery to drag-and-drop.
+    private func updatePinButtonVisibility(animated: Bool) {
+        let target: CGFloat = (isActiveWindow || isMouseInside) ? 1 : 0
+        if animated {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.15
+                pinLeftButton.animator().alphaValue = target
+                pinRightButton.animator().alphaValue = target
+            }
+        } else {
+            pinLeftButton.alphaValue = target
+            pinRightButton.alphaValue = target
+        }
     }
 
     func updateImage(_ image: CGImage) {
@@ -466,6 +512,12 @@ final class ThumbnailView: NSView {
         currentHintStyle = style
         applyHintStyle(style)
         hintLayer.isHidden = false
+        // Mirror the window's display name into the big banner. The small
+        // header label keeps showing too — that's intentional, the banner
+        // just amplifies it for distance scanning.
+        hintTitleLayer.string = windowInfo?.displayName ?? ""
+        hintTitleBg.isHidden = false
+        hintTitleLayer.isHidden = false
         needsLayout = true
         window?.invalidateCursorRects(for: self)
     }
@@ -473,6 +525,8 @@ final class ThumbnailView: NSView {
     func hideHint() {
         hintLayer.isHidden = true
         hintHelperLayer.isHidden = true
+        hintTitleBg.isHidden = true
+        hintTitleLayer.isHidden = true
         window?.invalidateCursorRects(for: self)
     }
 

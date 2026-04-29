@@ -513,6 +513,39 @@ final class AccessibilityManager {
         return true
     }
 
+    /// Demote the current work-area main into a reference panel without a
+    /// detour through the virtual display. The window is already on screen,
+    /// so we just resize it in place and transfer the cached AX element.
+    @discardableResult
+    func moveMainToReferencePanel(windowID: CGWindowID, pid: pid_t, referencePanelCG: CGRect) -> Bool {
+        var axWin: AXUIElement?
+        if let cached = activeWorkAreaElement, cached.windowID == windowID {
+            axWin = cached.element
+        }
+        if axWin == nil {
+            axWin = findAXWindowByID(windowID, pid: pid)
+        }
+        guard let window = axWin else {
+            logger.warning("moveMainToRefPanel: could not find AX window for \(windowID)")
+            return false
+        }
+
+        var position = CGPoint(x: referencePanelCG.origin.x, y: referencePanelCG.origin.y)
+        var size = CGSize(width: referencePanelCG.width, height: referencePanelCG.height)
+        if let posValue = AXValueCreate(.cgPoint, &position) {
+            AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, posValue)
+        }
+        if let sizeValue = AXValueCreate(.cgSize, &size) {
+            AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, sizeValue)
+        }
+
+        if activeWorkAreaElement?.windowID == windowID {
+            activeWorkAreaElement = nil
+        }
+        activeReferenceElement = (windowID: windowID, element: window)
+        return true
+    }
+
     /// Park the pinned reference window back to the virtual display.
     @discardableResult
     func parkReferenceWindow(windowID: CGWindowID, pid: pid_t) -> Bool {

@@ -1102,8 +1102,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func pinAsReference(_ windowInfo: WindowInfo, side: ReferenceSide) {
         guard let wa = workAreaWindow else { return }
-        // Cannot pin the main window as reference
-        if windowInfo.windowID == currentMainWindowID { return }
+
+        let isDemotingMain = (windowInfo.windowID == currentMainWindowID)
 
         // If the target is already pinned on the *other* side, unpin that first
         // so it doesn't stay in two places.
@@ -1128,11 +1128,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let refArea = side == .left ? wa.leftReferencePanelCGFrame() : wa.rightReferencePanelCGFrame()
 
-        let success = AccessibilityManager.shared.moveFromVirtualDisplayToReferencePanel(
-            windowID: windowInfo.windowID,
-            pid: windowInfo.ownerPID,
-            referencePanelCG: refArea
-        )
+        let success: Bool
+        if isDemotingMain {
+            // Active main lives in work area, not parked. Resize in place
+            // instead of detouring through the virtual display.
+            success = AccessibilityManager.shared.moveMainToReferencePanel(
+                windowID: windowInfo.windowID,
+                pid: windowInfo.ownerPID,
+                referencePanelCG: refArea
+            )
+        } else {
+            success = AccessibilityManager.shared.moveFromVirtualDisplayToReferencePanel(
+                windowID: windowInfo.windowID,
+                pid: windowInfo.ownerPID,
+                referencePanelCG: refArea
+            )
+        }
         guard success else {
             logger.warning("pinAsReference(\(side == .left ? "left" : "right")): failed to move \(windowInfo.displayName)")
             // Roll back side activation if it wasn't already active for a different window.
@@ -1153,10 +1164,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pinnedRightReferencePID = windowInfo.ownerPID
         }
 
-        // Reposition the main window into its (possibly shrunken) middle panel.
-        let mainArea = wa.mainPanelCGFrame()
-        if let mainID = currentMainWindowID {
-            AccessibilityManager.shared.setWindowFrame(windowID: mainID, cgFrame: mainArea)
+        if isDemotingMain {
+            // Active was just demoted — main slot is now empty. Pop a successor
+            // from the back-stack (MRU fallback if empty), or leave main empty.
+            currentMainWindowID = nil
+            currentMainPID = nil
+            workAreaPositions.removeValue(forKey: windowInfo.windowID)
+            promoteNextMain()
+        } else {
+            // Reposition the main window into its (possibly shrunken) middle panel.
+            let mainArea = wa.mainPanelCGFrame()
+            if let mainID = currentMainWindowID {
+                AccessibilityManager.shared.setWindowFrame(windowID: mainID, cgFrame: mainArea)
+            }
         }
 
         logger.warning("Pinned \(windowInfo.displayName) as \(side == .left ? "left" : "right") reference")
@@ -1167,6 +1187,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.windowTracker.forceUpdate()
         }
+    }
+
+    /// Pick a new main window after the current one was demoted to a reference.
+    /// Preference order: back-stack → MRU thumbnails → leave empty.
+    private func promoteNextMain() {
+        guard let wa = workAreaWindow,
+              let allWindows = windowTracker.lastKnownWindows else { return }
+
+        let isViable: (CGWindowID) -> WindowInfo? = { [weak self] id in
+            guard let self else { return nil }
+            guard !self.isPinnedReference(id) else { return nil }
+            return allWindows.first { $0.windowID == id }
+        }
+
+        // Drain the back-stack from the top until we find a live, non-pinned candidate.
+        var candidate: WindowInfo?
+        while let popped = mainWindowStack.popLast() {
+            if let info = isViable(popped) {
+                candidate = info
+                break
+            }
+        }
+
+        // Fallback: most-recently-used thumbnail that's still viable.
+        if candidate == nil {
+            for id in mruThumbnailIDs {
+                if let info = isViable(id) {
+                    candidate = info
+                    break
+                }
+            }
+        }
+
+        guard let newMain = candidate else {
+            // Nothing to promote — leave the main slot empty. The user can
+            // click any thumbnail to fill it.
+            for (_, controller) in overlayControllers {
+                controller.activeWindowID = nil
+            }
+            windowTracker.clearMainWindowSilently()
+            return
+        }
+
+        let mainArea = wa.mainPanelCGFrame()
+        parkedWindows.remove(newMain.windowID)
+        let remembered = workAreaPositions[newMain.windowID]
+        let target: CGRect? = remembered.map { clampToWorkArea($0, workArea: mainArea) }
+        AccessibilityManager.shared.moveFromVirtualDisplayToWorkArea(
+            windowID: newMain.windowID,
+            pid: newMain.ownerPID,
+            workAreaCG: mainArea,
+            targetFrame: target
+        )
+
+        currentMainWindowID = newMain.windowID
+        currentMainPID = newMain.ownerPID
+        windowTracker.setMainWindowSilently(newMain.windowID)
+        for (_, controller) in overlayControllers {
+            controller.activeWindowID = newMain.windowID
+        }
+        AccessibilityManager.shared.activateWindow(
+            pid: newMain.ownerPID,
+            windowID: newMain.windowID,
+            windowTitle: newMain.title
+        )
     }
 
     /// Reposition main + any pinned references after the split ratio changes.
@@ -1469,8 +1554,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // If dropped on the work area, pin as reference (skip if already pinned or is main).
         // Side is chosen by which half of the work area the drop landed on.
+        // Active main is allowed: pinAsReference demotes it and promotes a
+        // successor into the work area.
         if let wa = workAreaWindow, wa.frame.contains(mouseLocation),
-           windowID != currentMainWindowID,
            !isPinnedReference(windowID) {
             if let windows = windowTracker.lastKnownWindows,
                let info = windows.first(where: { $0.windowID == windowID }) {

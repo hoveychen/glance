@@ -666,6 +666,15 @@ mod platform {
             paint_pin_buttons(hdc, width);
         }
 
+        // --- Hint-mode title banner ---
+        // Big bold title strip at the top of the image area so the user can
+        // scan windows by title from a distance while picking a hint key.
+        // Painted before the badge so the centered pill always wins on tiny
+        // tiles where the two would otherwise overlap.
+        if state.hint_char.is_some() {
+            paint_hint_title(hdc, &client_rect, &state.title);
+        }
+
         // --- Hint badge ---
         if let Some(ref hint) = state.hint_char {
             paint_hint_badge(hdc, &client_rect, hint, state.hint_style);
@@ -962,6 +971,64 @@ mod platform {
             &mut hint_wide.clone(),
             &mut text_rect,
             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+
+        SelectObject(hdc, old_font);
+        let _ = DeleteObject(font);
+    }
+
+    /// Paint the big bold title strip at the top of the image area. Only
+    /// shown in hint mode — gives the user a high-contrast banner to scan by
+    /// instead of squinting at the small 14pt header label. Height/font scale
+    /// with image size; skipped on very small tiles where the banner would
+    /// crowd the hint pill.
+    unsafe fn paint_hint_title(
+        hdc: windows::Win32::Graphics::Gdi::HDC,
+        rect: &RECT,
+        title: &str,
+    ) {
+        let image_h = (rect.bottom - rect.top) - HEADER_HEIGHT;
+        if image_h < 80 {
+            return;
+        }
+
+        let banner_h = ((image_h as f32) * 0.16).clamp(32.0, 56.0) as i32;
+        let font_h = ((banner_h as f32) * 0.5).clamp(16.0, 26.0) as i32;
+
+        let banner_rect = RECT {
+            left: rect.left,
+            top: rect.top + HEADER_HEIGHT,
+            right: rect.right,
+            bottom: rect.top + HEADER_HEIGHT + banner_h,
+        };
+
+        let bg = CreateSolidBrush(windows::Win32::Foundation::COLORREF(rgb(15, 15, 15)));
+        FillRect(hdc, &banner_rect, bg);
+        let _ = DeleteObject(bg);
+
+        let font = CreateFontW(
+            font_h,
+            0, 0, 0,
+            FW_BOLD.0 as i32,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            PCWSTR(encode_wide("Segoe UI\0").as_ptr()),
+        );
+        let old_font = SelectObject(hdc, font);
+        SetTextColor(hdc, windows::Win32::Foundation::COLORREF(COLOR_TEXT_WHITE));
+        SetBkMode(hdc, TRANSPARENT);
+
+        let title_wide = encode_wide_no_null(title);
+        let mut text_rect = RECT {
+            left: banner_rect.left + 8,
+            top: banner_rect.top,
+            right: banner_rect.right - 8,
+            bottom: banner_rect.bottom,
+        };
+        DrawTextW(
+            hdc,
+            &mut title_wide.clone(),
+            &mut text_rect,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
 
         SelectObject(hdc, old_font);

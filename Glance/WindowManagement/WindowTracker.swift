@@ -135,6 +135,13 @@ final class WindowTracker {
         mainWindowID = windowID
     }
 
+    /// Clear the cached main window ID without triggering an update.
+    /// Used when the previous main was demoted (e.g. pinned as reference)
+    /// and there's no successor — the next refresh will pick fresh.
+    func clearMainWindowSilently() {
+        mainWindowID = nil
+    }
+
     // MARK: - AX Observers
 
     /// Subscribe to AX notifications for a given PID.
