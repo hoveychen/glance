@@ -943,10 +943,11 @@ impl GlanceApp {
     }
 
     fn handle_window_focused(&mut self, hwnd: isize) {
-        let wa_hwnd = self.work_area.as_ref().map(|w| w.hwnd()).unwrap_or(0);
-
-        // Ignore focus events for our own windows.
-        if hwnd == wa_hwnd || hwnd == 0 {
+        if hwnd == 0 {
+            return;
+        }
+        // Ignore focus events for our own windows (work area, overlays).
+        if self.is_our_overlay(hwnd) {
             return;
         }
 
@@ -960,11 +961,19 @@ impl GlanceApp {
             return;
         }
 
-        // If the focused window is one of our known windows (a parked window
-        // received focus from outside, e.g., Alt+Tab), auto-swap it in.
-        if self.known_window_ids.contains(&hwnd) && self.parked_windows.contains(&hwnd) {
-            self.handle_thumbnail_click(hwnd);
+        // A newly-launched app may not be in known_window_ids until the next
+        // periodic refresh tick — re-enumerate so we can classify it now.
+        if !self.known_window_ids.contains(&hwnd) {
+            self.refresh_layout();
         }
+        // Only swap if Glance treats this as a real, user-facing top-level
+        // window (filtered via is_real_window during refresh). Skips menu
+        // popups, tooltips, system UI, dialogs we ignore, etc.
+        if !self.known_window_ids.contains(&hwnd) {
+            return;
+        }
+
+        self.handle_thumbnail_click(hwnd);
     }
 
     // -----------------------------------------------------------------------
