@@ -111,6 +111,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// be removed during termination.
     private var eventMonitorTokens: [Any] = []
 
+    /// Observer for `NSWorkspace.didActivateApplicationNotification`, mirroring
+    /// Dock-click / Cmd-Tab into a work-area swap. Only retained while active.
+    private var workspaceActivationObserver: NSObjectProtocol?
+
     /// Whether a hard-exit watchdog has already been scheduled — avoids arming
     /// multiple watchdogs if the terminate path runs more than once.
     private var terminateWatchdogArmed = false
@@ -511,12 +515,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         windowTracker.startTracking()
         createOverlays()
+
+        // Mirror system-level app switches (Dock click, Cmd-Tab, clicking a
+        // window of another app) into a work-area swap. Deferred to next tick
+        // so WindowTracker's own activation handler refreshes first.
+        let nc = NSWorkspace.shared.notificationCenter
+        workspaceActivationObserver = nc.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            DispatchQueue.main.async {
+                self?.handleAppActivation(app)
+            }
+        }
     }
 
     private func deactivate() {
         guard isActive else { return }
         isActive = false
         logger.warning("Deactivating Glance layout.")
+
+        if let obs = workspaceActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(obs)
+            workspaceActivationObserver = nil
+        }
 
         // Cancel onboarding guide if still showing
         if let guide = onboardingGuide {
@@ -1093,6 +1117,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let windows = windowTracker.lastKnownWindows,
               let info = windows.first(where: { $0.windowID == windowID }) else { return }
         logger.info("Spring-load activated for: \(info.displayName)")
+        handleThumbnailClick(info)
+    }
+
+    // MARK: - System-Level App Activation
+
+    /// Triggered whenever any app becomes frontmost — Dock click, Cmd-Tab, or
+    /// clicking another app's window. Promotes that app's frontmost real
+    /// window into the work area so system switching stays consistent with
+    /// thumbnail clicks.
+    private func handleAppActivation(_ app: NSRunningApplication) {
+        guard isActive, onboardingController == nil, onboardingGuide == nil else { return }
+        if app.processIdentifier == ProcessInfo.processInfo.processIdentifier { return }
+        if let bid = app.bundleIdentifier, bid == Bundle.main.bundleIdentifier { return }
+        // .accessory / .prohibited apps don't appear in Cmd-Tab; if one briefly
+        // becomes frontmost (system dialog, helper) we shouldn't drag its
+        // window into the work area.
+        guard app.activationPolicy == .regular else { return }
+
+        guard let windows = windowTracker.lastKnownWindows,
+              let info = windows.first(where: {
+                  $0.ownerPID == app.processIdentifier && $0.isActualWindow && !$0.isTethered
+              }) else { return }
+
+        if info.windowID == currentMainWindowID { return }
+        if isPinnedReference(info.windowID) { return }
+
+        // Hint mode's CGEventTap swallows keyboard input, so Cmd-Tab usually
+        // can't reach here while hinting — but mouse paths (Dock click,
+        // clicking a window on another screen) still can. Treat them as an
+        // implicit cancel: tear hint mode down before swapping.
+        if isHintMode { exitHintMode() }
+
         handleThumbnailClick(info)
     }
 
