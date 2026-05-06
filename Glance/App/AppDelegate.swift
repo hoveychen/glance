@@ -1135,6 +1135,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // window into the work area.
         guard app.activationPolicy == .regular else { return }
 
+        // Same-app activations are either an echo of our own swap (we just
+        // raised a different window of this app via thumbnail click / hint)
+        // or a new window of the current main app — neither should override
+        // the user's choice. Picking "first window of this PID" here would
+        // also race with stale z-order in lastKnownWindows.
+        if currentMainPID == app.processIdentifier { return }
+
         guard let windows = windowTracker.lastKnownWindows,
               let info = windows.first(where: {
                   $0.ownerPID == app.processIdentifier && $0.isActualWindow && !$0.isTethered
