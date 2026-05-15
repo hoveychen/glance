@@ -201,8 +201,8 @@ final class OverlayWindowController {
     func thumbnailUpdated(windowID: CGWindowID) {
         guard let thumbWindow = thumbnailWindows[windowID],
               let info = thumbWindow.thumbnailView,
-              let image = info.windowInfo?.latestImage else { return }
-        thumbWindow.updateImage(image)
+              let surface = info.windowInfo?.latestSurface else { return }
+        thumbWindow.updateImage(surface)
     }
 }
 

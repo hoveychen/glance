@@ -624,9 +624,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.handleDragComplete(windowID: windowID)
             }
             controller.onThumbnailHoverStart = { [weak self] windowID in
+                self?.captureManager.setHoverWindow(windowID)
                 self?.startHoverPreview(windowID: windowID)
             }
             controller.onThumbnailHoverEnd = { [weak self] windowID in
+                self?.captureManager.setHoverWindow(nil)
                 self?.cancelHoverPreview()
             }
             controller.onThumbnailDragSpringLoad = { [weak self] windowID in
@@ -675,6 +677,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mainArea = wa.mainPanelCGFrame()
         // Use the full frame for layout engine (excluded rect)
         let fullAreaAppKit = wa.appKitFrame
+
+        // Snapshot the previous main so we can detect focus changes and burst-capture
+        // the new main when it switches.
+        let prevMainID = currentMainWindowID
 
         // Detect newly appeared / disappeared windows
         let currentIDs = Set(windows.map(\.windowID))
@@ -987,14 +993,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshMRUHighlights()
 
         // Capture thumbnails (including the active window so its thumbnail stays fresh)
-        captureManager.updateCaptures(for: thumbnailInfos) { [weak self] windowID, image in
+        captureManager.updateCaptures(for: thumbnailInfos) { [weak self] windowID, image, surface in
             guard let self else { return }
             if let info = windows.first(where: { $0.windowID == windowID }) {
                 info.latestImage = image
+                info.latestSurface = surface
             }
             for (_, controller) in self.overlayControllers {
                 controller.thumbnailUpdated(windowID: windowID)
             }
+        }
+
+        // Drive the capture scheduler: the active main captures at 2 FPS, newly
+        // discovered windows and the just-focused main burst at 5 FPS for 1 s.
+        captureManager.setActiveWindow(effectiveMainID)
+        for newID in newWindowIDs where thumbnailIDs.contains(newID) {
+            captureManager.burst(newID)
+        }
+        if let newMain = effectiveMainID, newMain != prevMainID {
+            captureManager.burst(newMain)
         }
     }
 

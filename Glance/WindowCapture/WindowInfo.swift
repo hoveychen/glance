@@ -1,4 +1,5 @@
 import AppKit
+import IOSurface
 
 /// Represents a tracked window with its metadata and latest captured thumbnail.
 final class WindowInfo: Identifiable, Hashable {
@@ -8,7 +9,14 @@ final class WindowInfo: Identifiable, Hashable {
     var title: String
     var frame: CGRect
     var isOnScreen: Bool
+
+    /// Most recent capture as a CGImage. Used by the hover-preview window
+    /// (which needs a CGImage for `NSImage(cgImage:)`).
     var latestImage: CGImage?
+    /// Most recent capture as an IOSurface. Used as `CALayer.contents` for
+    /// thumbnails — CALayer recognises IOSurface backing and skips the
+    /// `CA::Render::copy_image` materialisation on every commit.
+    var latestSurface: IOSurface?
     /// Index into NSScreen.screens at the time the window was first discovered.
     var originalScreenIndex: Int?
 

@@ -1,4 +1,5 @@
 import AppKit
+import IOSurface
 import os.log
 
 private let logger = Logger(subsystem: "com.hoveychen.Glance", category: "ThumbnailWindow")
@@ -153,8 +154,8 @@ final class ThumbnailWindow: NSWindow {
         thumbnailView.windowInfo = info
     }
 
-    func updateImage(_ image: CGImage) {
-        thumbnailView.updateImage(image)
+    func updateImage(_ surface: IOSurface) {
+        thumbnailView.updateImage(surface)
     }
 
     func showHint(_ character: String, style: ThumbnailView.HintStyle) {

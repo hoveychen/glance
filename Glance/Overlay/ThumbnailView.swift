@@ -1,4 +1,5 @@
 import AppKit
+import IOSurface
 
 /// Displays a single window thumbnail in Mission Control style.
 final class ThumbnailView: NSView {
@@ -440,11 +441,11 @@ final class ThumbnailView: NSView {
         }
     }
 
-    func updateImage(_ image: CGImage) {
+    func updateImage(_ surface: IOSurface) {
         guard windowInfo?.isPrivateBrowsing != true else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        imageLayer.contents = image
+        imageLayer.contents = surface
         CATransaction.commit()
     }
 
@@ -464,6 +465,8 @@ final class ThumbnailView: NSView {
             let w = Int(info.frame.width)
             let h = Int(info.frame.height)
             privateSizeLabel.string = "\(w) × \(h)"
+        } else if let surface = windowInfo?.latestSurface {
+            imageLayer.contents = surface
         } else if let image = windowInfo?.latestImage {
             imageLayer.contents = image
         }
