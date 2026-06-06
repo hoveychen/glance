@@ -348,6 +348,13 @@ final class WindowTracker {
         axMgr.cgWindowEntries = newWindows.map { ($0.windowID, $0.ownerPID, $0.title, $0.frame) }
         axMgr.rebuildAXCache(for: seenPIDs)
         for info in newWindows {
+            // Resolve the owning app's activation policy once (it doesn't change
+            // over a process's lifetime). Lets isActualWindow recognise system
+            // agents (SecurityAgent credential prompts, USB authorization) so they
+            // are never parked onto the hidden virtual display.
+            if info.ownerActivationPolicy == nil {
+                info.ownerActivationPolicy = NSRunningApplication(processIdentifier: info.ownerPID)?.activationPolicy
+            }
             // Skip re-classifying windows that already have AX data and are parked
             // (their AX element may not be reachable while on virtual display)
             if info.axSubrole != nil && info.frame.origin.x >= (VirtualDisplayManager.shared.origin.x - 100) {

@@ -29,6 +29,14 @@ final class WindowInfo: Identifiable, Hashable {
     /// The CGWindowLevel / layer. 0 = normal window, >0 = overlay/menu/system.
     var windowLevel: Int = 0
 
+    /// The owning app's `NSApplication.ActivationPolicy`, populated by WindowTracker.
+    /// `nil` when the owning process could not be resolved (e.g. it already quit) —
+    /// in that case we fall back to the existing classification rather than guessing.
+    /// Used to recognise system agents (SecurityAgent credential prompts, USB
+    /// authorization dialogs, helper HUDs) which are `.accessory` / `.prohibited` and
+    /// must never be treated as switchable work windows.
+    var ownerActivationPolicy: NSApplication.ActivationPolicy?
+
     /// Whether this window is tethered to another same-PID window (sidebar, watermark,
     /// HUD) and cannot be positioned independently. Tethered windows are excluded from
     /// thumbnailing, auto-swap, and individual parking — their parent carries them.
@@ -42,6 +50,19 @@ final class WindowInfo: Identifiable, Hashable {
     var isActualWindow: Bool {
         // Non-zero window level means overlay, menu, tooltip, etc.
         if windowLevel != 0 { return false }
+
+        // Windows owned by non-regular apps (.accessory / .prohibited) are system
+        // agents — credential prompts (SecurityAgent), USB authorization dialogs,
+        // helper HUDs — never user-switchable work windows. These processes are
+        // protected, so their AX subrole is often unreadable (nil); without this
+        // guard the AXUnknown/.none branch below would mis-classify a >=100x100
+        // password dialog as a real window, and the work-area pipeline would park
+        // it onto the hidden virtual display — making it invisible until Glance
+        // quits. handleAppActivation already refuses to swap non-regular apps via
+        // the same `activationPolicy == .regular` test; mirror that here so the
+        // thumbnail / park / auto-swap paths agree. `nil` (process gone) falls
+        // through to the existing classification.
+        if let policy = ownerActivationPolicy, policy != .regular { return false }
 
         // Classify by AX subrole
         switch axSubrole {
