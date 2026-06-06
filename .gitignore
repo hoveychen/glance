@@ -26,3 +26,4 @@ glance-windows/target/
 
 # Agent scratch (claude-fleet PRD plan tracker)
 TASKS.md
+.worktrees/
