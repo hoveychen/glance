@@ -93,6 +93,13 @@ final class TabStripView: NSView {
 
     override var isFlipped: Bool { false }
 
+    // The work area is a borderless overlay below normal window level, so it is
+    // usually not the key window when the user reaches for a tab. Without this,
+    // AppKit swallows the first click as a window-activating event and the user
+    // has to click twice (once to focus, once to select). Accepting first mouse
+    // makes a single click both activate the window and hit the tab.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     // MARK: - Tracking
 
     override func updateTrackingAreas() {
