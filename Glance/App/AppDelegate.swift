@@ -110,6 +110,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func isDockedTab(_ id: CGWindowID) -> Bool { dockedTabOrder.contains(id) }
 
+    /// Persisted tab records waiting to be matched to live windows on launch.
+    /// Drained by `restoreTabsIfNeeded` once windows are enumerated.
+    private var pendingTabRestore: [TabRecord] = []
+    private var tabsRestored = false
+
     /// The frosted-glass work area.
     private var workAreaWindow: WorkAreaWindow?
 
@@ -519,6 +524,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(Double(wa.rightSplitRatio), forKey: "workAreaRightSplitRatio")
             self.repositionSplitWindows()
         }
+        // Queue persisted docked tabs for restoration once windows are enumerated.
+        pendingTabRestore = WorkAreaTabStore.shared.records
+        tabsRestored = pendingTabRestore.isEmpty
         wa.tabStrip.onSelect = { [weak self] id in self?.handleTabSelect(id) }
         wa.tabStrip.onClose = { [weak self] id in self?.handleTabClose(id) }
         wa.tabStrip.onTogglePin = { [weak self] id in self?.handleTabTogglePin(id) }
@@ -816,6 +824,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mainInfo = windows.first(where: { $0.windowID == effectiveMainID })
         let mainPID = mainInfo?.ownerPID
         currentMainPID = mainPID
+
+        // Re-dock persisted tabs once windows have been enumerated.
+        restoreTabsIfNeeded(windows: windows)
 
         // Refresh the tab strip BEFORE computing panel frames: the strip's
         // reserved height shrinks the main panel when any window is docked.
@@ -1550,13 +1561,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let records: [TabRecord] = arranged.compactMap { id in
             guard let info = windows.first(where: { $0.windowID == id }),
                   let bundleId = info.bundleId else { return nil }
-            let title = info.title.isEmpty ? nil : info.title
+            // Don't write private-browsing window titles to disk; match any
+            // window of the app instead (title == nil).
+            let title = (info.title.isEmpty || info.isPrivateBrowsing) ? nil : info.title
             return TabRecord(
                 identity: TabIdentity(bundleId: bundleId, title: title),
                 pinned: pinnedTabIDs.contains(id)
             )
         }
         WorkAreaTabStore.shared.save(records)
+    }
+
+    /// Re-dock persisted tabs by matching their (bundleId + title) identity to
+    /// live windows. Best-effort, one-shot: runs on the first window enumeration
+    /// after activation; apps not yet open simply aren't restored.
+    private func restoreTabsIfNeeded(windows: [WindowInfo]) {
+        guard !tabsRestored, !windows.isEmpty else { return }
+        var usedIDs = Set(dockedTabOrder)
+        for record in pendingTabRestore {
+            guard let match = windows.first(where: { info in
+                guard !usedIDs.contains(info.windowID),
+                      info.isActualWindow, !info.isTethered,
+                      !isPinnedReference(info.windowID),
+                      info.bundleId == record.identity.bundleId else { return false }
+                if let title = record.identity.title { return info.title == title }
+                return true
+            }) else { continue }
+            usedIDs.insert(match.windowID)
+            dockedTabOrder.append(match.windowID)
+            if record.pinned { pinnedTabIDs.insert(match.windowID) }
+        }
+        dockedTabOrder = WorkAreaTabStore.arrange(order: dockedTabOrder, pinned: pinnedTabIDs)
+        tabsRestored = true
+        pendingTabRestore = []
     }
 
     // MARK: - Hover Preview
@@ -2374,6 +2411,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lines.append("pinnedLeftReferenceWindowID: \(pinnedLeftReferenceWindowID.map(String.init) ?? "nil")")
         lines.append("pinnedRightReferenceWindowID: \(pinnedRightReferenceWindowID.map(String.init) ?? "nil")")
         lines.append("parkedWindows: \(parkedWindows.count) \(parkedWindows.sorted())")
+        lines.append("dockedTabs: \(dockedTabOrder) pinned=\(pinnedTabIDs.sorted())")
         lines.append("knownWindowIDs: \(knownWindowIDs.count)")
         lines.append("overlayControllers: \(overlayControllers.count)")
         lines.append("windowOrder: \(windowOrder.count) entries")

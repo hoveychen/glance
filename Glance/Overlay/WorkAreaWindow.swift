@@ -200,7 +200,9 @@ final class WorkAreaWindow: NSWindow {
         // Tab strip (hidden until at least one window is docked as a tab).
         let strip = TabStripView(frame: .zero)
         strip.isHidden = true
-        strip.autoresizingMask = []
+        // Pin to the top edge and stretch horizontally during live resize;
+        // setFrame() also reframes it exactly via updateTabStripFrame().
+        strip.autoresizingMask = [.width, .minYMargin]
         effectView.addSubview(strip)
         tabStrip = strip
 
