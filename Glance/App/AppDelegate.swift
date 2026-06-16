@@ -108,6 +108,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// closable). Independent from the left/right reference-pin mechanism.
     private var pinnedTabIDs: Set<CGWindowID> = []
 
+    /// Tab recency, least-recently-used first. Drives LRU eviction when the
+    /// number of unpinned tabs exceeds `maxUnpinnedTabs`.
+    private var tabLRU: [CGWindowID] = []
+
+    /// Cap on unpinned tabs. Pinned tabs are exempt and unlimited. When a newly
+    /// activated window would exceed this, the least-recently-used unpinned tab
+    /// (never the active one) is evicted back to the thumbnail grid.
+    private static let maxUnpinnedTabs = 8
+
     private func isDockedTab(_ id: CGWindowID) -> Bool { dockedTabOrder.contains(id) }
 
     /// Persisted tab records waiting to be matched to live windows on launch.
@@ -620,6 +629,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // clear the in-memory tab state. The persisted set survives for relaunch.
         dockedTabOrder.removeAll()
         pinnedTabIDs.removeAll()
+        tabLRU.removeAll()
         AccessibilityManager.shared.clearAll()
 
         workAreaWindow?.orderOut(nil)
@@ -827,6 +837,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Re-dock persisted tabs once windows have been enumerated.
         restoreTabsIfNeeded(windows: windows)
+
+        // Auto-accumulate: whatever window is active becomes a tab (Chrome-style).
+        // This single chokepoint covers every activation path — grid click,
+        // Cmd-Tab/app activation, new-window auto-swap, tab select, promotion.
+        if let activeID = effectiveMainID { accumulateActiveTab(activeID) }
 
         // Refresh the tab strip BEFORE computing panel frames: the strip's
         // reserved height shrinks the main panel when any window is docked.
@@ -1239,6 +1254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if isDockedTab(windowInfo.windowID) {
             dockedTabOrder.removeAll { $0 == windowInfo.windowID }
             pinnedTabIDs.remove(windowInfo.windowID)
+            tabLRU.removeAll { $0 == windowInfo.windowID }
             persistTabs()
         }
 
@@ -1474,42 +1490,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         wa.setTabs(tabs)
     }
 
-    /// Dock a window into the tab strip and make it the active tab. No-op if the
-    /// window is already docked or is currently a pinned reference.
-    private func dockWindow(_ id: CGWindowID, at index: Int? = nil) {
-        guard !isDockedTab(id), !isPinnedReference(id) else { return }
-        let idx = index ?? dockedTabOrder.count
-        dockedTabOrder = WorkAreaTabStore.insert(id, into: dockedTabOrder, at: idx)
+    /// Auto-accumulate the active window as a tab (Chrome-style: whatever you
+    /// switch to joins the strip). Bumps the window to most-recently-used and,
+    /// if newly docked, evicts the oldest unpinned tab past the cap.
+    private func accumulateActiveTab(_ id: CGWindowID) {
+        guard !isPinnedReference(id) else { return }  // references aren't tabs
+
+        // Bump recency regardless of dock state (active is always freshest).
+        tabLRU.removeAll { $0 == id }
+        tabLRU.append(id)
+
+        guard !isDockedTab(id) else { return }
+
+        dockedTabOrder.append(id)
+        dockedTabOrder = WorkAreaTabStore.arrange(order: dockedTabOrder, pinned: pinnedTabIDs)
+        evictIfNeeded(keeping: id)
         persistTabs()
+    }
 
-        // Activate the strip first so the main panel shrinks below it, then place
-        // the docked window into the (now correct) main panel.
-        updateTabStrip(activeID: id, windows: windowTracker.lastKnownWindows ?? [])
-
-        if id != currentMainWindowID,
-           let windows = windowTracker.lastKnownWindows,
-           let info = windows.first(where: { $0.windowID == id }) {
-            // Swaps it into the main panel (parks the old main) and forceUpdates.
-            handleThumbnailClick(info)
-        } else {
-            // Docking the already-active window: just resize it below the strip.
-            repositionMainToPanel()
-            windowTracker.forceUpdate()
+    /// Evict least-recently-used unpinned tabs until the unpinned count is within
+    /// `maxUnpinnedTabs`. The active window is never evicted. Evicted windows
+    /// simply stop being docked → they reappear in the thumbnail grid.
+    private func evictIfNeeded(keeping activeID: CGWindowID) {
+        let unpinnedCount = dockedTabOrder.filter { !pinnedTabIDs.contains($0) }.count
+        guard unpinnedCount > Self.maxUnpinnedTabs else { return }
+        let overflow = unpinnedCount - Self.maxUnpinnedTabs
+        // tabLRU is oldest-first; evict the oldest unpinned, non-active tabs.
+        let victims = tabLRU.filter {
+            isDockedTab($0) && !pinnedTabIDs.contains($0) && $0 != activeID
+        }.prefix(overflow)
+        for victim in victims {
+            dockedTabOrder.removeAll { $0 == victim }
+            tabLRU.removeAll { $0 == victim }
         }
     }
 
     /// Close (undock) a tab: the window returns to the thumbnail grid. The real
-    /// window is never closed — "close tab" here means "stop docking it".
+    /// window is never closed — "close tab" here means "stop docking it". When
+    /// the active tab is closed, switch to a neighbouring tab (Chrome-style) so
+    /// the window actually leaves the main panel instead of re-accumulating.
     private func handleTabClose(_ id: CGWindowID) {
         guard isDockedTab(id) else { return }
+        let wasActive = (id == currentMainWindowID)
+
+        // Pick a successor before mutating the order (nearest tab, else nil).
+        let successorID: CGWindowID? = wasActive ? successorTab(forClosing: id) : nil
+
         dockedTabOrder.removeAll { $0 == id }
         pinnedTabIDs.remove(id)
+        tabLRU.removeAll { $0 == id }
         persistTabs()
-        // Refresh the strip (it may now be empty → expands the panel) and resize
-        // the active window into the larger panel, then relayout for the grid.
+
+        if wasActive,
+           let successorID,
+           let windows = windowTracker.lastKnownWindows,
+           let info = windows.first(where: { $0.windowID == successorID }) {
+            // Activates the successor and parks the just-closed window → grid.
+            handleThumbnailClick(info)
+            return
+        }
+
+        // No successor (closed the only/last tab) or closing a background tab:
+        // refresh the strip, resize the active window into the larger panel, and
+        // relayout so the undocked window rejoins the grid.
         updateTabStrip(activeID: currentMainWindowID, windows: windowTracker.lastKnownWindows ?? [])
         repositionMainToPanel()
         windowTracker.forceUpdate()
+    }
+
+    /// The window to activate when `closingID` (the active tab) is closed: the
+    /// next tab in display order, else the previous, else any other live grid
+    /// window (so the closed window can leave the main panel), else nil.
+    private func successorTab(forClosing closingID: CGWindowID) -> CGWindowID? {
+        let arranged = WorkAreaTabStore.arrange(order: dockedTabOrder, pinned: pinnedTabIDs)
+        if let idx = arranged.firstIndex(of: closingID) {
+            if idx + 1 < arranged.count { return arranged[idx + 1] }
+            if idx - 1 >= 0 { return arranged[idx - 1] }
+        }
+        // No other tab — fall back to any other switchable window in the grid.
+        return windowTracker.lastKnownWindows?.first(where: {
+            $0.windowID != closingID && $0.isActualWindow && !$0.isTethered
+                && !isPinnedReference($0.windowID)
+        })?.windowID
     }
 
     /// Activate a tab — swap its window into the main panel.
@@ -1767,17 +1829,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let wa = workAreaWindow {
             let mouse = NSEvent.mouseLocation
             if wa.frame.contains(mouse) {
-                // Top band → dock-as-tab hint; rest → left/right reference hint.
-                if mouse.y >= wa.frame.maxY - WorkAreaWindow.tabDropZoneHeight {
-                    wa.updateTabDropHint(active: true)
-                    wa.updateDropHint(side: nil)
-                } else {
-                    wa.updateTabDropHint(active: false)
-                    let side: DropHintSide = mouse.x < wa.frame.midX ? .left : .right
-                    wa.updateDropHint(side: side)
-                }
+                let side: DropHintSide = mouse.x < wa.frame.midX ? .left : .right
+                wa.updateDropHint(side: side)
             } else {
-                wa.updateTabDropHint(active: false)
                 wa.updateDropHint(side: nil)
             }
         }
@@ -1840,7 +1894,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleDragComplete(windowID: CGWindowID) {
         let mouseLocation = NSEvent.mouseLocation  // AppKit coords
         workAreaWindow?.updateDropHint(side: nil)
-        workAreaWindow?.updateTabDropHint(active: false)
 
         // Recency glow: a drag counts as an interaction regardless of whether
         // it results in a pin (covered again by pinAsReference) or a reorder.
@@ -1857,15 +1910,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 for (_, controller) in overlayControllers {
                     controller.draggingWindowID = nil
                 }
-                // Top band of the work area → dock as a tab; the rest → pin as
-                // a left/right reference (chosen by which half of the area).
-                let stripZoneHeight = TabStripView.height + 12
-                if mouseLocation.y >= wa.frame.maxY - stripZoneHeight {
-                    dockWindow(windowID)
-                } else {
-                    let side: ReferenceSide = mouseLocation.x < wa.frame.midX ? .left : .right
-                    pinAsReference(info, side: side)
-                }
+                let side: ReferenceSide = mouseLocation.x < wa.frame.midX ? .left : .right
+                pinAsReference(info, side: side)
                 return
             }
         }
