@@ -174,23 +174,32 @@ final class TabStripView: NSView {
         let rect = frame.rect
         let isHovered = hoveredID == tab.windowID
 
-        // Background
+        // Background. Dark pills (not light) so white text stays legible no
+        // matter what the frosted-glass material lets through from the
+        // wallpaper behind it. A subtle light border keeps each tab's edge
+        // visible even on a dark background where the fill blends in.
         let bgColor: NSColor
+        let borderColor: NSColor
+        let borderWidth: CGFloat
         if tab.isActive {
-            bgColor = NSColor.white.withAlphaComponent(0.20)
+            bgColor = NSColor.black.withAlphaComponent(0.38)
+            borderColor = NSColor.white.withAlphaComponent(0.32)
+            borderWidth = 1
         } else if isHovered {
-            bgColor = NSColor.white.withAlphaComponent(0.11)
+            bgColor = NSColor.black.withAlphaComponent(0.24)
+            borderColor = NSColor.white.withAlphaComponent(0.14)
+            borderWidth = 1
         } else {
-            bgColor = NSColor.white.withAlphaComponent(0.05)
+            bgColor = NSColor.black.withAlphaComponent(0.14)
+            borderColor = NSColor.white.withAlphaComponent(0.10)
+            borderWidth = 1
         }
         let path = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
         bgColor.setFill()
         path.fill()
-        if tab.isActive {
-            NSColor.white.withAlphaComponent(0.25).setStroke()
-            path.lineWidth = 1
-            path.stroke()
-        }
+        borderColor.setStroke()
+        path.lineWidth = borderWidth
+        path.stroke()
 
         // Icon
         var contentX = rect.minX + 8
@@ -210,12 +219,19 @@ final class TabStripView: NSView {
                 let para = NSMutableParagraphStyle()
                 para.lineBreakMode = .byTruncatingTail
                 let textColor = tab.isActive
-                    ? NSColor.white.withAlphaComponent(0.92)
-                    : NSColor.white.withAlphaComponent(0.6)
+                    ? NSColor.white
+                    : NSColor.white.withAlphaComponent(0.85)
+                // Dark halo so the white title stays readable even when the
+                // pill is light (light wallpaper bleeding through the glass).
+                let shadow = NSShadow()
+                shadow.shadowColor = NSColor.black.withAlphaComponent(0.7)
+                shadow.shadowBlurRadius = 2.5
+                shadow.shadowOffset = NSSize(width: 0, height: -1)
                 let attrs: [NSAttributedString.Key: Any] = [
                     .font: NSFont.systemFont(ofSize: 11, weight: tab.isActive ? .medium : .regular),
                     .foregroundColor: textColor,
                     .paragraphStyle: para,
+                    .shadow: shadow,
                 ]
                 let str = NSAttributedString(string: tab.title, attributes: attrs)
                 let textH = str.size().height
@@ -231,6 +247,12 @@ final class TabStripView: NSView {
                     NSColor.white.withAlphaComponent(0.18).setFill()
                     NSBezierPath(ovalIn: closeRect).fill()
                 }
+                NSGraphicsContext.current?.saveGraphicsState()
+                let glyphShadow = NSShadow()
+                glyphShadow.shadowColor = NSColor.black.withAlphaComponent(0.7)
+                glyphShadow.shadowBlurRadius = 2
+                glyphShadow.shadowOffset = NSSize(width: 0, height: -1)
+                glyphShadow.set()
                 let glyph = NSBezierPath()
                 let inset: CGFloat = 4.5
                 let r = closeRect.insetBy(dx: inset, dy: inset)
@@ -240,8 +262,9 @@ final class TabStripView: NSView {
                 glyph.line(to: CGPoint(x: r.maxX, y: r.minY))
                 glyph.lineWidth = 1.3
                 glyph.lineCapStyle = .round
-                NSColor.white.withAlphaComponent(closeHover ? 0.95 : 0.6).setStroke()
+                NSColor.white.withAlphaComponent(closeHover ? 0.95 : 0.7).setStroke()
                 glyph.stroke()
+                NSGraphicsContext.current?.restoreGraphicsState()
             }
         }
     }
