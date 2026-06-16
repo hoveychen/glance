@@ -185,8 +185,36 @@ final class WorkAreaWindow: NSWindow {
         }
         effectView.addSubview(rightDividerView)
 
+        // Tab strip (hidden until at least one window is docked as a tab).
+        let strip = TabStripView(frame: .zero)
+        strip.isHidden = true
+        // Pin to the top edge and stretch horizontally during live resize;
+        // setFrame() also reframes it exactly via updateTabStripFrame().
+        strip.autoresizingMask = [.width, .minYMargin]
+        effectView.addSubview(strip)
+        tabStrip = strip
+
         minSize = NSSize(width: 400, height: 300)
         self.delegate = self
+    }
+
+    /// Replace the docked-tab set shown in the strip. Passing an empty array
+    /// hides the strip and frees its reserved space. Window repositioning is
+    /// the coordinator's responsibility (it recomputes panel frames after).
+    func setTabs(_ tabs: [TabStripView.Tab]) {
+        let active = !tabs.isEmpty
+        tabStripActive = active
+        tabStrip.isHidden = !active
+        tabStrip.tabs = tabs
+        updateTabStripFrame()
+        updateDividerPositions()
+    }
+
+    private func updateTabStripFrame() {
+        guard let effectView else { return }
+        let w = effectView.bounds.width - Self.paddingLeft - Self.paddingRight
+        let y = effectView.bounds.height - Self.tabStripTopInset - TabStripView.height
+        tabStrip.frame = CGRect(x: Self.paddingLeft, y: y, width: max(0, w), height: TabStripView.height)
     }
 
     // Re-entrancy guard for the delegate clamp path.
@@ -219,6 +247,29 @@ final class WorkAreaWindow: NSWindow {
     private weak var effectView: NSVisualEffectView?
     private var dropHintView: NSView!
     private var dropHintSide: DropHintSide?
+
+    /// The Chrome-style tab strip at the top of the work area. Hidden (and
+    /// reserves no space) until at least one window is docked as a tab.
+    private(set) var tabStrip: TabStripView!
+    /// Whether the tab strip currently reserves space at the top.
+    private(set) var tabStripActive: Bool = false
+
+    /// Top inset above the strip (clears the rounded corner / border).
+    private static let tabStripTopInset: CGFloat = 4
+    /// Gap between the strip's bottom edge and where content begins.
+    private static let tabStripBottomGap: CGFloat = 6
+
+    /// Total vertical space the strip removes from the top of the usable
+    /// interior when active. Zero when no tabs are docked.
+    var tabStripReservedHeight: CGFloat {
+        tabStripActive ? Self.tabStripTopInset + TabStripView.height + Self.tabStripBottomGap : 0
+    }
+
+    /// Space removed from the top of the content area: the strip reservation
+    /// when active, otherwise the normal top padding.
+    private var topContentInset: CGFloat {
+        tabStripActive ? tabStripReservedHeight : Self.paddingTop
+    }
 
     /// Fraction of the available (gap-subtracted) width allocated to the left reference panel.
     /// Only used when `leftReferenceActive == true`. Clamped in `clampRatios()`.
@@ -291,13 +342,16 @@ final class WorkAreaWindow: NSWindow {
     }
 
     /// The usable interior in CG coordinates (top-left origin), inset by padding.
+    /// When the tab strip is active it also reserves space at the top so the
+    /// active window sits below the strip.
     var usableCGFrame: CGRect {
         let full = cgFrame
+        let top = topContentInset
         return CGRect(
             x: full.origin.x + Self.paddingLeft,
-            y: full.origin.y + Self.paddingTop,
+            y: full.origin.y + top,
             width: full.width - Self.paddingLeft - Self.paddingRight,
-            height: full.height - Self.paddingTop - Self.paddingBottom
+            height: full.height - top - Self.paddingBottom
         )
     }
 
@@ -378,7 +432,7 @@ final class WorkAreaWindow: NSWindow {
         let bounds = effectView.bounds
         let halfW = (bounds.width - inset * 3) / 2
         let y = Self.paddingBottom
-        let h = bounds.height - Self.paddingTop - Self.paddingBottom
+        let h = bounds.height - topContentInset - Self.paddingBottom
         let x: CGFloat
         switch side {
         case .left:  x = inset
@@ -397,7 +451,7 @@ final class WorkAreaWindow: NSWindow {
         let mainW = available - leftW - rightW
 
         let y = Self.paddingBottom
-        let h = frame.height - Self.paddingTop - Self.paddingBottom
+        let h = frame.height - topContentInset - Self.paddingBottom
         let baseX = Self.paddingLeft
 
         if leftReferenceActive {
@@ -413,6 +467,7 @@ final class WorkAreaWindow: NSWindow {
 
     override func setFrame(_ frameRect: NSRect, display flag: Bool) {
         super.setFrame(Self.clampToScreens(frameRect), display: flag)
+        updateTabStripFrame()
         updateDividerPositions()
         if let side = dropHintSide { updateDropHintFrame(side: side) }
     }
