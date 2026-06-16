@@ -98,6 +98,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         id == pinnedLeftReferenceWindowID || id == pinnedRightReferenceWindowID
     }
 
+    /// Windows docked into the work-area tab strip, in canonical order (pinned
+    /// tabs first — see `WorkAreaTabStore.arrange`). The active docked tab is
+    /// `currentMainWindowID`; the rest are parked but shown as tabs, not grid
+    /// thumbnails. Non-docked windows continue to appear in the thumbnail grid.
+    private var dockedTabOrder: [CGWindowID] = []
+
+    /// Which docked tabs are pinned (Chrome-style: icon-only, leftmost, not
+    /// closable). Independent from the left/right reference-pin mechanism.
+    private var pinnedTabIDs: Set<CGWindowID> = []
+
+    private func isDockedTab(_ id: CGWindowID) -> Bool { dockedTabOrder.contains(id) }
+
     /// The frosted-glass work area.
     private var workAreaWindow: WorkAreaWindow?
 
@@ -507,6 +519,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(Double(wa.rightSplitRatio), forKey: "workAreaRightSplitRatio")
             self.repositionSplitWindows()
         }
+        wa.tabStrip.onSelect = { [weak self] id in self?.handleTabSelect(id) }
+        wa.tabStrip.onClose = { [weak self] id in self?.handleTabClose(id) }
+        wa.tabStrip.onTogglePin = { [weak self] id in self?.handleTabTogglePin(id) }
+        wa.tabStrip.onReorder = { [weak self] id, idx in self?.handleTabReorder(id, to: idx) }
         wa.orderFrontRegardless()
         workAreaWindow = wa
 
@@ -592,6 +608,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         parkedWindows.removeAll()
+        // Docked windows are restored above (active main + parked tabs); just
+        // clear the in-memory tab state. The persisted set survives for relaunch.
+        dockedTabOrder.removeAll()
+        pinnedTabIDs.removeAll()
         AccessibilityManager.shared.clearAll()
 
         workAreaWindow?.orderOut(nil)
@@ -671,11 +691,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleWindowsUpdate(windows: [WindowInfo], mainWindowID: CGWindowID?) {
         guard isActive, let wa = workAreaWindow else { return }
 
-        // Use the padded interior for window placement/constraining
-        let usableArea = wa.usableCGFrame
-        // When any reference is pinned, the main window uses only the middle panel.
-        let mainArea = wa.mainPanelCGFrame()
-        // Use the full frame for layout engine (excluded rect)
+        // Use the full frame for layout engine (excluded rect). The usable
+        // interior and main-panel frames depend on whether the tab strip
+        // reserves space this cycle, so they're computed after `updateTabStrip`.
         let fullAreaAppKit = wa.appKitFrame
 
         // Snapshot the previous main so we can detect focus changes and burst-capture
@@ -690,6 +708,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let refID = pinnedRightReferenceWindowID { allKnownNow.insert(refID) }
         let newWindowIDs = currentIDs.subtracting(knownWindowIDs)
         knownWindowIDs = currentIDs
+
+        // Prune docked tabs whose windows are gone (neither live nor parked).
+        let dockCountBefore = dockedTabOrder.count
+        dockedTabOrder.removeAll { !allKnownNow.contains($0) }
+        pinnedTabIDs = pinnedTabIDs.filter { dockedTabOrder.contains($0) }
+        if dockedTabOrder.count != dockCountBefore { persistTabs() }
 
         // If a pinned reference window was closed, auto-unpin the corresponding side.
         if let refID = pinnedLeftReferenceWindowID, !currentIDs.contains(refID) && !parkedIDs.contains(refID) {
@@ -793,6 +817,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mainPID = mainInfo?.ownerPID
         currentMainPID = mainPID
 
+        // Refresh the tab strip BEFORE computing panel frames: the strip's
+        // reserved height shrinks the main panel when any window is docked.
+        updateTabStrip(activeID: effectiveMainID, windows: windows)
+
+        // Use the padded interior for window placement/constraining.
+        let usableArea = wa.usableCGFrame
+        // When any reference is pinned (or the strip is active), the main window
+        // uses only the middle panel below the strip.
+        let mainArea = wa.mainPanelCGFrame()
+
         // Determine which screen the work area is on
         let waCenter = CGPoint(x: wa.frame.midX, y: wa.frame.midY)
         let workAreaScreenIndex: Int = {
@@ -839,13 +873,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return true
         }
 
+        // Docked windows are represented as tabs in the strip, not as grid
+        // thumbnails — exclude them from the grid layout (they're still parked
+        // and captured via `thumbnailInfos` below). The active docked window is
+        // currentMainWindowID, also excluded here since it lives in the strip.
+        let dockedIDs = Set(dockedTabOrder)
+        let gridInfos = thumbnailInfos.filter { !dockedIDs.contains($0.windowID) }
+
         // Maintain stable ordering: keep existing order, insert new windows
         // after the last existing window from the same process (fall back to
         // the end if no sibling exists).
-        let thumbnailIDs = Set(thumbnailInfos.map(\.windowID))
-        windowOrder.removeAll { !thumbnailIDs.contains($0) }
-        let pidByID = Dictionary(uniqueKeysWithValues: thumbnailInfos.map { ($0.windowID, $0.ownerPID) })
-        for info in thumbnailInfos where !windowOrder.contains(info.windowID) {
+        let gridIDs = Set(gridInfos.map(\.windowID))
+        windowOrder.removeAll { !gridIDs.contains($0) }
+        let pidByID = Dictionary(uniqueKeysWithValues: gridInfos.map { ($0.windowID, $0.ownerPID) })
+        for info in gridInfos where !windowOrder.contains(info.windowID) {
             if let lastSameIdx = windowOrder.lastIndex(where: { pidByID[$0] == info.ownerPID }) {
                 windowOrder.insert(info.windowID, at: lastSameIdx + 1)
             } else {
@@ -859,7 +900,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // when last in the work area — including a clamp-distorted aspect).
         // Original height is used only as the upscale cap, where the pre-park
         // value gives a stable maximum.
-        let orderedInfos = windowOrder.compactMap { id in thumbnailInfos.first { $0.windowID == id } }
+        let orderedInfos = windowOrder.compactMap { id in gridInfos.first { $0.windowID == id } }
         let metrics = orderedInfos.map { info -> WindowMetrics in
             let ratio: CGFloat = info.frame.height > 0
                 ? info.frame.width / info.frame.height
@@ -976,8 +1017,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             (windowID: slot.windowID, rect: slot.rect, screenIndex: slot.screenIndex)
         }
 
-        // Cache inputs for the lightweight drag relayout path.
-        cachedThumbnailInfos = thumbnailInfos
+        // Cache inputs for the lightweight drag relayout path (grid windows only).
+        cachedThumbnailInfos = gridInfos
         cachedScreenRegions = screenRegions
 
         // Dispatch slots and mark active / pinned windows
@@ -986,7 +1027,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.activeWindowID = effectiveMainID
             controller.pinnedLeftReferenceWindowID = pinnedLeftReferenceWindowID
             controller.pinnedRightReferenceWindowID = pinnedRightReferenceWindowID
-            controller.updateSlots(slotsByScreen[screenIdx] ?? [], allWindows: thumbnailInfos)
+            controller.updateSlots(slotsByScreen[screenIdx] ?? [], allWindows: gridInfos)
         }
 
         // Re-apply recency glow — newly materialized thumbnails pick it up.
@@ -1007,7 +1048,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Drive the capture scheduler: the active main captures at 2 FPS, newly
         // discovered windows and the just-focused main burst at 5 FPS for 1 s.
         captureManager.setActiveWindow(effectiveMainID)
-        for newID in newWindowIDs where thumbnailIDs.contains(newID) {
+        for newID in newWindowIDs where gridIDs.contains(newID) {
             captureManager.burst(newID)
         }
         if let newMain = effectiveMainID, newMain != prevMainID {
@@ -1182,6 +1223,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func pinAsReference(_ windowInfo: WindowInfo, side: ReferenceSide) {
         guard let wa = workAreaWindow else { return }
+
+        // A window can't be both a tab and a reference — undock it if it was a tab.
+        if isDockedTab(windowInfo.windowID) {
+            dockedTabOrder.removeAll { $0 == windowInfo.windowID }
+            pinnedTabIDs.remove(windowInfo.windowID)
+            persistTabs()
+        }
 
         let isDemotingMain = (windowInfo.windowID == currentMainWindowID)
 
@@ -1389,6 +1437,126 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.windowTracker.forceUpdate()
         }
+    }
+
+    // MARK: - Work-Area Tabs
+
+    /// Rebuild the tab strip from the current docked set and push it to the work
+    /// area. Called every layout cycle (so active state / titles stay fresh) and
+    /// directly after tab interactions for immediate feedback.
+    private func updateTabStrip(activeID: CGWindowID?, windows: [WindowInfo]) {
+        guard let wa = workAreaWindow else { return }
+        let arranged = WorkAreaTabStore.arrange(order: dockedTabOrder, pinned: pinnedTabIDs)
+        let lastKnown = windowTracker.lastKnownWindows ?? []
+        let tabs: [TabStripView.Tab] = arranged.compactMap { id in
+            guard let info = windows.first(where: { $0.windowID == id })
+                    ?? lastKnown.first(where: { $0.windowID == id }) else { return nil }
+            let title = info.title.isEmpty ? info.ownerName : info.title
+            return TabStripView.Tab(
+                windowID: id,
+                title: title,
+                icon: info.appIcon,
+                isActive: id == activeID,
+                isPinned: pinnedTabIDs.contains(id)
+            )
+        }
+        wa.setTabs(tabs)
+    }
+
+    /// Dock a window into the tab strip and make it the active tab. No-op if the
+    /// window is already docked or is currently a pinned reference.
+    private func dockWindow(_ id: CGWindowID, at index: Int? = nil) {
+        guard !isDockedTab(id), !isPinnedReference(id) else { return }
+        let idx = index ?? dockedTabOrder.count
+        dockedTabOrder = WorkAreaTabStore.insert(id, into: dockedTabOrder, at: idx)
+        persistTabs()
+
+        // Activate the strip first so the main panel shrinks below it, then place
+        // the docked window into the (now correct) main panel.
+        updateTabStrip(activeID: id, windows: windowTracker.lastKnownWindows ?? [])
+
+        if id != currentMainWindowID,
+           let windows = windowTracker.lastKnownWindows,
+           let info = windows.first(where: { $0.windowID == id }) {
+            // Swaps it into the main panel (parks the old main) and forceUpdates.
+            handleThumbnailClick(info)
+        } else {
+            // Docking the already-active window: just resize it below the strip.
+            repositionMainToPanel()
+            windowTracker.forceUpdate()
+        }
+    }
+
+    /// Close (undock) a tab: the window returns to the thumbnail grid. The real
+    /// window is never closed — "close tab" here means "stop docking it".
+    private func handleTabClose(_ id: CGWindowID) {
+        guard isDockedTab(id) else { return }
+        dockedTabOrder.removeAll { $0 == id }
+        pinnedTabIDs.remove(id)
+        persistTabs()
+        // Refresh the strip (it may now be empty → expands the panel) and resize
+        // the active window into the larger panel, then relayout for the grid.
+        updateTabStrip(activeID: currentMainWindowID, windows: windowTracker.lastKnownWindows ?? [])
+        repositionMainToPanel()
+        windowTracker.forceUpdate()
+    }
+
+    /// Activate a tab — swap its window into the main panel.
+    private func handleTabSelect(_ id: CGWindowID) {
+        guard id != currentMainWindowID,
+              let windows = windowTracker.lastKnownWindows,
+              let info = windows.first(where: { $0.windowID == id }) else { return }
+        handleThumbnailClick(info)
+    }
+
+    /// Toggle a tab's pinned (Chrome-style) state. Pin/unpin only reorders the
+    /// strip — it doesn't change which window is active or parked.
+    private func handleTabTogglePin(_ id: CGWindowID) {
+        guard isDockedTab(id) else { return }
+        if pinnedTabIDs.contains(id) {
+            pinnedTabIDs.remove(id)
+        } else {
+            pinnedTabIDs.insert(id)
+        }
+        dockedTabOrder = WorkAreaTabStore.arrange(order: dockedTabOrder, pinned: pinnedTabIDs)
+        persistTabs()
+        updateTabStrip(activeID: currentMainWindowID, windows: windowTracker.lastKnownWindows ?? [])
+    }
+
+    /// Reorder a tab to a new display index, preserving the pinned-first invariant.
+    private func handleTabReorder(_ id: CGWindowID, to index: Int) {
+        guard isDockedTab(id) else { return }
+        let arranged = WorkAreaTabStore.insert(
+            id,
+            into: WorkAreaTabStore.arrange(order: dockedTabOrder, pinned: pinnedTabIDs),
+            at: index
+        )
+        dockedTabOrder = WorkAreaTabStore.arrange(order: arranged, pinned: pinnedTabIDs)
+        persistTabs()
+        updateTabStrip(activeID: currentMainWindowID, windows: windowTracker.lastKnownWindows ?? [])
+    }
+
+    /// Resize the active window into the current main-panel frame.
+    private func repositionMainToPanel() {
+        guard let wa = workAreaWindow, let mainID = currentMainWindowID else { return }
+        AccessibilityManager.shared.setWindowFrame(windowID: mainID, cgFrame: wa.mainPanelCGFrame())
+    }
+
+    /// Persist the docked-tab set by stable identity (bundleId + title) so it can
+    /// be restored on the next launch.
+    private func persistTabs() {
+        let arranged = WorkAreaTabStore.arrange(order: dockedTabOrder, pinned: pinnedTabIDs)
+        let windows = windowTracker.lastKnownWindows ?? []
+        let records: [TabRecord] = arranged.compactMap { id in
+            guard let info = windows.first(where: { $0.windowID == id }),
+                  let bundleId = info.bundleId else { return nil }
+            let title = info.title.isEmpty ? nil : info.title
+            return TabRecord(
+                identity: TabIdentity(bundleId: bundleId, title: title),
+                pinned: pinnedTabIDs.contains(id)
+            )
+        }
+        WorkAreaTabStore.shared.save(records)
     }
 
     // MARK: - Hover Preview
@@ -1643,8 +1811,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 for (_, controller) in overlayControllers {
                     controller.draggingWindowID = nil
                 }
-                let side: ReferenceSide = mouseLocation.x < wa.frame.midX ? .left : .right
-                pinAsReference(info, side: side)
+                // Top band of the work area → dock as a tab; the rest → pin as
+                // a left/right reference (chosen by which half of the area).
+                let stripZoneHeight = TabStripView.height + 12
+                if mouseLocation.y >= wa.frame.maxY - stripZoneHeight {
+                    dockWindow(windowID)
+                } else {
+                    let side: ReferenceSide = mouseLocation.x < wa.frame.midX ? .left : .right
+                    pinAsReference(info, side: side)
+                }
                 return
             }
         }
