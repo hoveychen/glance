@@ -167,6 +167,18 @@ final class WorkAreaWindow: NSWindow {
         dropHintView.layer?.cornerRadius = 10
         dropHintView.isHidden = true
         effectView.addSubview(dropHintView)
+
+        // Tab-strip drop hint — highlights the top band while dragging a
+        // thumbnail there, signalling "release to dock as a tab".
+        tabDropHintView = NSView()
+        tabDropHintView.wantsLayer = true
+        tabDropHintView.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.22).cgColor
+        tabDropHintView.layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.7).cgColor
+        tabDropHintView.layer?.borderWidth = 2
+        tabDropHintView.layer?.cornerRadius = 8
+        tabDropHintView.isHidden = true
+        effectView.addSubview(tabDropHintView)
+
         self.effectView = effectView
 
         // Left divider (hidden by default)
@@ -245,6 +257,11 @@ final class WorkAreaWindow: NSWindow {
     private weak var effectView: NSVisualEffectView?
     private var dropHintView: NSView!
     private var dropHintSide: DropHintSide?
+    private var tabDropHintView: NSView!
+
+    /// Height of the top band that accepts a thumbnail drop to dock it as a tab.
+    /// Mirrors the `stripZoneHeight` used by the coordinator's drop routing.
+    static let tabDropZoneHeight: CGFloat = TabStripView.height + 12
 
     /// The Chrome-style tab strip at the top of the work area. Hidden (and
     /// reserves no space) until at least one window is docked as a tab.
@@ -413,6 +430,24 @@ final class WorkAreaWindow: NSWindow {
         onSplitRatioChanged?()
     }
 
+    /// Show or hide the tab-strip drop hint (highlights the top band).
+    func updateTabDropHint(active: Bool) {
+        tabDropHintView.isHidden = !active
+        if active { updateTabDropHintFrame() }
+    }
+
+    private func updateTabDropHintFrame() {
+        guard let effectView else { return }
+        let inset: CGFloat = 6
+        let h = Self.tabDropZoneHeight
+        tabDropHintView.frame = CGRect(
+            x: inset,
+            y: effectView.bounds.height - h - inset,
+            width: effectView.bounds.width - inset * 2,
+            height: h
+        )
+    }
+
     /// Show or hide the drop hint overlay. Pass `nil` to hide.
     func updateDropHint(side: DropHintSide?) {
         dropHintSide = side
@@ -468,6 +503,7 @@ final class WorkAreaWindow: NSWindow {
         updateTabStripFrame()
         updateDividerPositions()
         if let side = dropHintSide { updateDropHintFrame(side: side) }
+        if !(tabDropHintView?.isHidden ?? true) { updateTabDropHintFrame() }
     }
 
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {

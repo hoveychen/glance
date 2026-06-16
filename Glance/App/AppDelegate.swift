@@ -1730,9 +1730,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let wa = workAreaWindow {
             let mouse = NSEvent.mouseLocation
             if wa.frame.contains(mouse) {
-                let side: DropHintSide = mouse.x < wa.frame.midX ? .left : .right
-                wa.updateDropHint(side: side)
+                // Top band → dock-as-tab hint; rest → left/right reference hint.
+                if mouse.y >= wa.frame.maxY - WorkAreaWindow.tabDropZoneHeight {
+                    wa.updateTabDropHint(active: true)
+                    wa.updateDropHint(side: nil)
+                } else {
+                    wa.updateTabDropHint(active: false)
+                    let side: DropHintSide = mouse.x < wa.frame.midX ? .left : .right
+                    wa.updateDropHint(side: side)
+                }
             } else {
+                wa.updateTabDropHint(active: false)
                 wa.updateDropHint(side: nil)
             }
         }
@@ -1795,6 +1803,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleDragComplete(windowID: CGWindowID) {
         let mouseLocation = NSEvent.mouseLocation  // AppKit coords
         workAreaWindow?.updateDropHint(side: nil)
+        workAreaWindow?.updateTabDropHint(active: false)
 
         // Recency glow: a drag counts as an interaction regardless of whether
         // it results in a pin (covered again by pinAsReference) or a reorder.
