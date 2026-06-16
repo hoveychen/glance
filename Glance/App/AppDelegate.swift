@@ -899,12 +899,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return true
         }
 
-        // Docked windows are represented as tabs in the strip, not as grid
-        // thumbnails — exclude them from the grid layout (they're still parked
-        // and captured via `thumbnailInfos` below). The active docked window is
-        // currentMainWindowID, also excluded here since it lives in the strip.
-        let dockedIDs = Set(dockedTabOrder)
-        let gridInfos = thumbnailInfos.filter { !dockedIDs.contains($0.windowID) }
+        // Tabs coexist with the grid: a window that's also a tab still gets its
+        // thumbnail (and with it the left/right pin, Option-hint quick-switch,
+        // MRU glow, hover preview and drag interactions). The tab strip is an
+        // additive top quick-switcher, not a replacement for the grid.
+        let gridInfos = thumbnailInfos
 
         // Maintain stable ordering: keep existing order, insert new windows
         // after the last existing window from the same process (fall back to
